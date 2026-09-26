@@ -239,6 +239,25 @@ them, and the slowness was measured on one driver. A general version would
 first measure latched flip lateness per machine (DXGI's latched flip times are
 reliable) and switch only where latching is slow.
 
+Raster flip guard (2026-09-26): after the decode hold, PresentMon on
+`Moonlight-sandbox-20260926-140622-380` (4K Balanced) showed on-screen jerk
+>2 ms at 59 per mille (from 161) and 57 tear candidates in ~290 s (on-screen
+interval below the panel's 8.15 ms latched minimum, excluding latched pairs):
+33 tearing->tearing pairs whose calls were 9.75 ms apart but whose first flip
+landed late (3.4 ms p50, up to 12 ms), and 24 tearing->latched pairs. The
+SyncQPCTime check missed them because a tearing flip's refresh time is
+credited to an earlier refresh. `D3DKMTGetScanLine` does follow VRR on this
+panel (aligned capture 20260901-192940: 1% in vblank 8-9 ms after the previous
+Present, 84-99% at 9-16 ms, ~50% beyond 17 ms where the panel re-scans at its
+floor). Native flip protection now always opens the raster source and, before
+a tearing present, polls frame statistics and the raster until nothing is
+pending and the panel is in vertical blank, then presents with tearing
+allowed. After two display periods it latches, and three consecutive timeouts
+disable the raster wait for the session (logged) in favour of the old
+frame-statistics check, which also remains the fallback when the raster
+cannot be read. The wait is inside the presenter, so recorded submission
+times include it and replay stays exact. Unverified live.
+
 Native flip protection (2026-09-23), based on `5c5ba95b`: the flip anchor
 assumes a tearing present flips at its call, but on the Radeon 890M DXGI took
 p50 ~3.2 ms / p95 ~6.7 ms. A latched successor therefore flipped 2-8 ms later
