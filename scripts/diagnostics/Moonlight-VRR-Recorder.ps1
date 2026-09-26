@@ -33,6 +33,8 @@ try {
             '--output_file', ('"' + (Join-Path $Directory 'PresentMon.csv') + '"'),
             '--v1_metrics', '--qpc_time', '--no_console_stats', '--no_track_input', '--track_gpu_video',
             '--session_name', $presentMonSession, '--stop_existing_session')
+    # Reading the handle now keeps ExitCode available after the process exits.
+    $null = $presentMon.Handle
     Start-Sleep -Milliseconds 500
     if ($presentMon.HasExited) { throw "PresentMon exited at start: $($presentMon.ExitCode)" }
     [IO.File]::WriteAllText((Join-Path $Directory 'recorder-ready'), $instance)
