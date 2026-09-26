@@ -15,6 +15,7 @@
 
 #ifdef HAVE_FFMPEG
 #include "video/ffmpeg.h"
+#include "video/ffmpeg-renderers/pacer/vrr/receivedeadline.h"
 #endif
 
 #ifdef HAVE_SLVIDEO
@@ -1910,6 +1911,14 @@ bool Session::startConnectionAsync()
                                                                          m_StreamConfig.fps,
                                                                          false);
     }
+
+    // PyroWave partial frames: let the receive thread release a frame that
+    // lost optional detail by its VRR slot instead of after a fixed silence.
+    // Nothing is published unless the VRR pacer runs timestamp playout.
+    VrrReceiveDeadline::clear();
+    LiSetVideoReassemblyDeadlineCallback([](uint32_t rtpTimestamp) {
+        return VrrReceiveDeadline::deadlineUs(rtpTimestamp, LiGetMicroseconds());
+    });
 
     int err = LiStartConnection(&hostInfo, &m_StreamConfig, &k_ConnCallbacks,
                                 &m_VideoCallbacks, &m_AudioCallbacks,

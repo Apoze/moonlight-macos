@@ -310,6 +310,7 @@ ffmpeg {
         streaming/video/ffmpeg-renderers/pacer/vrr/vrrtimingcontroller.h \
         streaming/video/ffmpeg-renderers/pacer/vrr/vrrframedroppolicy.h \
         streaming/video/ffmpeg-renderers/pacer/vrr/vrrcatchup.h \
+        streaming/video/ffmpeg-renderers/pacer/vrr/receivedeadline.h \
         streaming/video/ffmpeg-renderers/pacer/vrr/vrrtargetwaiter.h
 }
 libva {
