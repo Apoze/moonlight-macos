@@ -1166,8 +1166,11 @@ bool Session::validateLaunch(SDL_Window* testWindow)
             emitLaunchWarning(tr("This PC's GPU driver can't decode PyroWave. Using H.264 instead."));
             m_SupportedVideoFormats.removeByMask(VIDEO_FORMAT_MASK_PYROWAVE);
         }
-        else if (NetworkBuffers::receiveBufferTooSmall()) {
-            emitLaunchWarning(tr("Linux limits this PC's network receive buffer, so PyroWave frames may lose packets. Fix it in Settings, below the video codec."));
+        else {
+            const QString bufferWarning = NetworkBuffers::launchWarning();
+            if (!bufferWarning.isEmpty()) {
+                emitLaunchWarning(bufferWarning);
+            }
         }
     }
 

@@ -138,6 +138,21 @@ plus a copyable command. Flatpak builds cannot run host commands, so they offer
 only the command. Launching a PyroWave stream with the low limit adds a launch
 warning.
 
+On Windows the same `NetworkBuffers` checks the receive rings of every
+connected wired adapter (2026-09-26): the standard NDIS `*ReceiveBuffers` and
+the Realtek USB driver's `ReceiveBufferLen` / `PendingReceives`, read from the
+adapter's class key with ranges from `Ndi\Params`. A value below
+min(driver maximum, 256) is flagged. The Realtek Gaming USB 2.5GbE on the test
+Ally shipped with 16 of 256 receive buffers and 6 of 64 receive URBs; in
+capture `20260926-143554` 72% of PyroWave frames lost ~24 packets, almost all
+in the last FEC block (the tail of each ~2 Gbps burst), while Windows counted
+no discards, and still images shimmered as the missing detail moved. Settings
+shows the adapter and values with a "Fix it" button that raises each flagged
+value to its maximum (capped at 2048) through one elevated PowerShell
+(`Set-NetAdapterAdvancedProperty -NoRestart`, then one `Restart-NetAdapter`),
+plus a copyable command; streams launch with a warning. Whether raising the
+ring removes the loss still needs a capture after the change.
+
 The "Average decoding time" statistic runs from the reassembled frame's
 enqueue in moonlight-common-c to decoder output, so it includes time waiting in
 the 15-frame decode-unit queue; the wait is shown separately. When that queue
