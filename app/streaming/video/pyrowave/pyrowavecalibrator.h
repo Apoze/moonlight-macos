@@ -6,13 +6,20 @@
 #include <QVariantList>
 #include <QVariantMap>
 
-// Runs a short synthetic decode sweep without changing the stream settings.
-// The estimate covers local decode capacity; it cannot measure a host or LAN.
+#include <atomic>
+#include <memory>
+
+// Finds, for each resolution and PyroWave format at one frame rate, the
+// highest bitrate at which this device decodes and draws all but the slowest
+// frame in 2000 within the VRR buffer, capped by its wired link speed, and
+// grades it on the codec author's quality scale. It does not change settings,
+// and it cannot measure the host or LAN.
 class PyroWaveCalibrator : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(bool running READ running NOTIFY changed)
     Q_PROPERTY(QString message READ message NOTIFY changed)
+    Q_PROPERTY(QString linkSummary READ linkSummary NOTIFY changed)
     Q_PROPERTY(QVariantList results READ results NOTIFY changed)
 
 public:
@@ -21,9 +28,16 @@ public:
 
     bool running() const { return m_Running; }
     QString message() const { return m_Message; }
+    QString linkSummary() const { return m_LinkSummary; }
     QVariantList results() const { return m_Results; }
 
-    Q_INVOKABLE void start(int fps);
+    // displayWidth/displayHeight size the render that each test frame goes
+    // through, as a stream drawing to that display would. Zero renders at the
+    // stream's own resolution. latencyMode (StreamingPreferences::VrrLatencyMode)
+    // sets the VRR buffer that the slowest frames must finish within.
+    Q_INVOKABLE void start(int fps, int displayWidth = 0, int displayHeight = 0, int latencyMode = 1);
+    // Stops after the format being tested; its finished results stay.
+    Q_INVOKABLE void cancel();
 
 signals:
     void changed();
@@ -31,6 +45,8 @@ signals:
 private:
     bool m_Running = false;
     QString m_Message;
+    QString m_LinkSummary;
     QVariantList m_Results;
     QPointer<QThread> m_Worker;
+    std::shared_ptr<std::atomic<bool>> m_Cancel;
 };

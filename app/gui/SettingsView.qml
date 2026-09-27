@@ -789,24 +789,33 @@ Flickable {
                         text: qsTr("Calibrate PyroWave")
                         enabled: !PyroWaveCalibrator.running
                         onClicked: {
+                            calibrationDialog.testFps = StreamingPreferences.fps
                             calibrationDialog.open()
-                            PyroWaveCalibrator.start(StreamingPreferences.fps)
+                            // Each test frame is drawn at this screen's size, as a stream would be
+                            PyroWaveCalibrator.start(calibrationDialog.testFps,
+                                                     Math.round(Screen.width * Screen.devicePixelRatio),
+                                                     Math.round(Screen.height * Screen.devicePixelRatio),
+                                                     StreamingPreferences.vrrLatencyMode)
                         }
                     }
 
                     Label {
                         width: parent.width
                         wrapMode: Text.Wrap
-                        text: qsTr("Click a format to apply it. The test measures local GPU decode, not the host, network, rendering, or picture quality.")
+                        text: qsTr("Finds the best bitrate this device can decode and draw smoothly for each resolution and format at your frame rate. Takes about two minutes. Click a result to use it.")
                     }
                 }
 
                 NavigableDialog {
                     id: calibrationDialog
-                    title: qsTr("PyroWave local decode test — %1 FPS").arg(StreamingPreferences.fps)
+                    property int testFps: 60
+                    title: qsTr("PyroWave calibration — %1 FPS").arg(testFps)
                     width: Math.min(settingsPage.width - 24, 860)
-                    height: Math.min(settingsPage.height - 24, 560)
+                    height: Math.min(settingsPage.height - 24, 640)
                     standardButtons: Dialog.Close
+
+                    // Finished results stay; the format being tested is abandoned
+                    onAboutToHide: PyroWaveCalibrator.cancel()
 
                     readonly property var rows: (Qt.platform.os === "linux" ? [
                         { name: "4K", width: 3840, height: 2160 },
@@ -821,35 +830,87 @@ Flickable {
                         { name: "720p", width: 1280, height: 720 }
                     ])
                     readonly property var samples: PyroWaveCalibrator.results
+                    readonly property var tierColors: ({
+                        "full": "#66bb6a",
+                        "reduced": "#ffca28",
+                        "low": "#ef5350",
+                        "slow": "#9e9e9e",
+                        "error": "#9e9e9e"
+                    })
 
+                    // Results arrive in sweep order: per resolution, 4:4:4 HDR,
+                    // 4:4:4 SDR, 4:2:0 HDR, 4:2:0 SDR
                     function sample(row, mode) {
                         var offset = row * 4 + mode
                         return offset < samples.length ? samples[offset] : null
                     }
 
-                    function optionText(option, tenBit) {
-                        var prefix = tenBit ? qsTr("10-bit") : qsTr("8-bit")
-                        if (!option) return prefix + " · " + (PyroWaveCalibrator.running ? qsTr("testing…") : "—")
-                        if (!option.valid) return prefix + " · " + option.error
-                        return qsTr("%1 · %2 ms GPU · Apply").arg(prefix).arg(option.p95Ms.toFixed(1))
+                    function hdrUnavailable(option) {
+                        return option && option.hdr && !SystemProperties.supportsHdr
                     }
 
                     function canApply(option) {
-                        return option && option.valid && (!option.hdr || SystemProperties.supportsHdr)
+                        return option && option.valid && option.keepsUp && !hdrUnavailable(option)
+                    }
+
+                    function headline(option, hdr) {
+                        var format = hdr ? qsTr("HDR (10-bit)") : qsTr("SDR (8-bit)")
+                        if (option && option.keepsUp) return format + " · " + qsTr("%1 Mbps").arg(option.bitrateKbps / 1000)
+                        return format
+                    }
+
+                    function tierText(option) {
+                        if (!option) return PyroWaveCalibrator.running ? qsTr("Testing…") : "—"
+                        if (option.tier === "error") return option.error
+                        if (option.tier === "slow") return qsTr("Can't keep up")
+                        if (hdrUnavailable(option)) return qsTr("No HDR display")
+                        var text = option.tier === "full" ? qsTr("Full quality") :
+                                   option.tier === "reduced" ? qsTr("Reduced quality") : qsTr("Low quality")
+                        if (option.nearLimit) text += " · " + qsTr("near limit")
+                        return text
+                    }
+
+                    function tierColor(option) {
+                        if (!option || hdrUnavailable(option)) return "#9e9e9e"
+                        return tierColors[option.tier]
+                    }
+
+                    function latencyModeName() {
+                        for (var i = 0; i < vrrLatencyModeListModel.count; i++) {
+                            if (vrrLatencyModeListModel.get(i).val === StreamingPreferences.vrrLatencyMode) {
+                                return vrrLatencyModeListModel.get(i).text
+                            }
+                        }
+                        return ""
+                    }
+
+                    function lateness(option) {
+                        return qsTr("Its slowest frame in 2000 finishes %1 ms late; the %2 VRR buffer absorbs up to %3 ms.")
+                                .arg(option.lateMs.toFixed(1)).arg(latencyModeName()).arg(option.bufferMs.toFixed(1))
                     }
 
                     function optionDetail(option) {
                         if (!option || !option.valid) return ""
-                        return qsTr("GPU decode mean %1 ms; p95 %2 ms. Synthetic payload %3 Mbps; author's quality guide %4 Mbps. Host, LAN, rendering, and live FPS were not tested.")
-                                .arg(option.meanMs.toFixed(1)).arg(option.p95Ms.toFixed(1))
-                                .arg((option.wireKbps / 1000).toFixed(0))
-                                .arg((option.requiredKbps / 1000).toFixed(0))
+                        if (!option.keepsUp) {
+                            return qsTr("Decoding and drawing use %1% of each frame at %2 FPS.").arg(option.loadPercent).arg(testFps) +
+                                    " " + lateness(option) + " " +
+                                    qsTr("A lower bitrate doesn't make this device fast enough, so the stream would stutter.")
+                        }
+                        var details = [qsTr("Decoding and drawing use %1% of each frame at %2 FPS.")
+                                       .arg(option.loadPercent).arg(testFps), lateness(option)]
+                        if (option.nearLimit) {
+                            details.push(qsTr("That leaves little of the buffer for host and network hiccups."))
+                        }
+                        details.push(qsTr("%1 Mbps reaches %2 dB on the codec author's quality scale; he recommends %3 Mbps (35 dB) for this format.")
+                                     .arg(option.bitrateKbps / 1000).arg(option.qualityDb.toFixed(1))
+                                     .arg(option.guideKbps / 1000))
+                        if (option.deviceLimited) details.push(qsTr("The bitrate was lowered so this device keeps up."))
+                        else if (option.linkLimited) details.push(qsTr("The bitrate is capped by this device's network link."))
+                        return details.join(" ")
                     }
 
                     function applyChoice(option) {
                         if (!canApply(option)) return
-                        var wasPyroWave = slider.pyroWave
-                        var previousBitrate = StreamingPreferences.bitrateKbps
                         StreamingPreferences.videoCodecConfig = StreamingPreferences.VCC_FORCE_PYROWAVE
                         for (var codecIndex = 0; codecIndex < codecListModel.count; codecIndex++) {
                             if (codecListModel.get(codecIndex).val === StreamingPreferences.VCC_FORCE_PYROWAVE) {
@@ -861,10 +922,7 @@ Flickable {
                         StreamingPreferences.height = option.height
                         StreamingPreferences.enableYUV444 = option.chroma444
                         StreamingPreferences.enableHdr = option.hdr
-                        StreamingPreferences.bitrateKbps = wasPyroWave ? previousBitrate :
-                            StreamingPreferences.getDefaultPyroWaveBitrate(option.width, option.height,
-                                                                           StreamingPreferences.fps,
-                                                                           option.chroma444, option.hdr)
+                        StreamingPreferences.bitrateKbps = option.bitrateKbps
                         StreamingPreferences.autoAdjustBitrate = false
                         slider.value = StreamingPreferences.bitrateKbps
 
@@ -913,7 +971,40 @@ Flickable {
                                 width: parent.width
                                 wrapMode: Text.Wrap
                                 font.pointSize: 9
-                                text: qsTr("The sample payload comes from one synthetic image and is not a recommended stream bitrate. Selecting a format keeps your current PyroWave bitrate, or uses the normal default when switching codecs. Adjust bitrate for your host and network.")
+                                text: PyroWaveCalibrator.linkSummary + " " +
+                                      qsTr("Your host isn't tested. Clicking a format applies it with the bitrate shown.")
+                            }
+
+                            Repeater {
+                                model: [
+                                    { tier: "full", text: qsTr("Full quality: reaches the codec author's recommended bitrate.") },
+                                    { tier: "reduced", text: qsTr("Reduced quality: somewhat below it; fine detail can soften in busy scenes.") },
+                                    { tier: "low", text: qsTr("Low quality: well below it; expect visible softness.") },
+                                    { tier: "slow", text: qsTr("Can't keep up: at %1 FPS, its slowest frames arrive later than the VRR buffer can hide.").arg(calibrationDialog.testFps) }
+                                ]
+                                delegate: Row {
+                                    spacing: 6
+                                    Rectangle {
+                                        width: 10
+                                        height: 10
+                                        radius: 5
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        color: calibrationDialog.tierColors[modelData.tier]
+                                    }
+                                    Label {
+                                        width: calibrationTable.width - 16
+                                        wrapMode: Text.Wrap
+                                        font.pointSize: 9
+                                        text: modelData.text
+                                    }
+                                }
+                            }
+
+                            Label {
+                                width: parent.width
+                                wrapMode: Text.Wrap
+                                font.pointSize: 9
+                                text: qsTr("\"Near limit\" formats keep all but 1 in 2000 frames on time, but their slowest frames use most of the %1 VRR buffer. Grades follow your VRR latency mode.").arg(calibrationDialog.latencyModeName())
                             }
 
                             Row {
@@ -938,42 +1029,67 @@ Flickable {
                                         anchors.verticalCenter: parent.verticalCenter
                                     }
 
-                                    Column {
-                                        width: (calibrationTable.width - 84) / 2
-                                        spacing: 2
-                                        Repeater {
-                                            model: [0, 1]
-                                            delegate: Button {
-                                                width: parent.width
-                                                height: 34
-                                                font.pointSize: 10
-                                                readonly property var option: calibrationDialog.sample(calibrationRow.rowIndex, modelData)
-                                                text: calibrationDialog.optionText(option, modelData === 0)
-                                                enabled: calibrationDialog.canApply(option)
-                                                ToolTip.delay: 400
-                                                ToolTip.visible: hovered
-                                                ToolTip.text: calibrationDialog.optionDetail(option)
-                                                onClicked: calibrationDialog.applyChoice(option)
-                                            }
-                                        }
-                                    }
+                                    Repeater {
+                                        // 4:4:4 then 4:2:0, each HDR then SDR
+                                        model: [[0, 1], [2, 3]]
+                                        delegate: Column {
+                                            id: chromaColumn
+                                            readonly property var modes: modelData
+                                            width: (calibrationTable.width - 84) / 2
+                                            spacing: 2
 
-                                    Column {
-                                        width: (calibrationTable.width - 84) / 2
-                                        spacing: 2
-                                        Repeater {
-                                            model: [2, 3]
-                                            delegate: Button {
-                                                width: parent.width
-                                                height: 34
-                                                font.pointSize: 10
-                                                readonly property var option: calibrationDialog.sample(calibrationRow.rowIndex, modelData)
-                                                text: calibrationDialog.optionText(option, modelData === 2)
-                                                enabled: calibrationDialog.canApply(option)
-                                                ToolTip.delay: 400
-                                                ToolTip.visible: hovered
-                                                ToolTip.text: calibrationDialog.optionDetail(option)
-                                                onClicked: calibrationDialog.applyChoice(option)
+                                            Repeater {
+                                                model: chromaColumn.modes
+                                                delegate: Button {
+                                                    id: optionButton
+                                                    width: parent.width
+                                                    height: 54
+                                                    readonly property var option: calibrationDialog.sample(calibrationRow.rowIndex, modelData)
+                                                    readonly property bool hdr: modelData % 2 === 0
+                                                    enabled: calibrationDialog.canApply(option)
+                                                    ToolTip.delay: 400
+                                                    ToolTip.visible: hovered && ToolTip.text !== ""
+                                                    ToolTip.text: calibrationDialog.optionDetail(option)
+                                                    onClicked: calibrationDialog.applyChoice(option)
+
+                                                    contentItem: Column {
+                                                        spacing: 2
+                                                        opacity: optionButton.enabled ? 1.0 : 0.6
+
+                                                        Label {
+                                                            width: parent.width
+                                                            horizontalAlignment: Text.AlignHCenter
+                                                            elide: Text.ElideRight
+                                                            font.pointSize: 10
+                                                            text: calibrationDialog.headline(optionButton.option, optionButton.hdr)
+                                                        }
+
+                                                        Row {
+                                                            anchors.horizontalCenter: parent.horizontalCenter
+                                                            spacing: 6
+
+                                                            Rectangle {
+                                                                width: 10
+                                                                height: 10
+                                                                radius: 5
+                                                                anchors.verticalCenter: parent.verticalCenter
+                                                                visible: !!optionButton.option
+                                                                color: calibrationDialog.tierColor(optionButton.option)
+                                                            }
+
+                                                            Label {
+                                                                font.pointSize: 9
+                                                                text: calibrationDialog.tierText(optionButton.option)
+
+                                                                // Untested cells keep the style's text color
+                                                                Binding on color {
+                                                                    when: !!optionButton.option
+                                                                    value: calibrationDialog.tierColor(optionButton.option)
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -1197,10 +1313,10 @@ Flickable {
                         width: parent.width
                         wrapMode: Text.Wrap
                         text: StreamingPreferences.vrrLatencyMode === StreamingPreferences.VLM_SMOOTH ?
-                                  qsTr("Buffer allowance: up to 4 source frames, at most 24 ms, limited by queue capacity. Actual learned delay may be lower.") :
-                                  StreamingPreferences.vrrLatencyMode === StreamingPreferences.VLM_LOW_LATENCY ?
-                                  qsTr("Buffer allowance: up to 1 source frame, at most 16 ms, limited by queue capacity. Actual learned delay may be lower.") :
-                                  qsTr("Buffer allowance: up to 2 source frames, at most 16 ms, limited by queue capacity. Actual learned delay may be lower.")
+                                  qsTr("Buffer allowance: up to 4 source frames, limited by queue capacity. Actual learned delay may be lower.") :
+                              StreamingPreferences.vrrLatencyMode === StreamingPreferences.VLM_LOW_LATENCY ?
+                                  qsTr("Buffer allowance: up to 1 source frame, limited by queue capacity. Actual learned delay may be lower.") :
+                                  qsTr("Buffer allowance: up to 2 source frames, limited by queue capacity. Actual learned delay may be lower.")
                     }
 
                     Label {
