@@ -12,6 +12,8 @@
 #include "slangmosh_scaler.hpp"
 #include "scaler.hpp"
 
+#include <chrono>
+
 using namespace Granite;
 using namespace Vulkan;
 using namespace PyroWave;
@@ -1603,17 +1605,24 @@ bool pyrowave_decoder_decode_is_ready_with_sideband(pyrowave_decoder decoder, bo
 }
 
 pyrowave_result
-pyrowave_decoder_decode_gpu_buffer(pyrowave_decoder decoder,
-                                   const pyrowave_gpu_sync_operation *acquire,
-                                   const pyrowave_gpu_sync_operation *release,
-                                   const pyrowave_gpu_buffers *buffers)
+pyrowave_decoder_decode_gpu_buffer_with_context_timing(pyrowave_decoder decoder,
+                                                       const pyrowave_gpu_sync_operation *acquire,
+                                                       const pyrowave_gpu_sync_operation *release,
+                                                       const pyrowave_gpu_buffers *buffers,
+                                                       uint64_t *context_wait_us)
 {
+	if (context_wait_us)
+		*context_wait_us = 0;
 	if (decoder->pyro_device->cmd && (acquire || release))
 		return PYROWAVE_ERROR_INVALID_ARGUMENT;
 
 	Util::set_thread_logging_interface(&null_logger);
 	auto *device = decoder->device;
+	auto before_context = context_wait_us ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 	device->next_frame_context();
+	if (context_wait_us)
+		*context_wait_us = std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now() - before_context).count();
 
 	WrappedViewBuffers views = {};
 	if (!views.wrap(device, buffers, decoder->fragment_path ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : VK_IMAGE_USAGE_STORAGE_BIT))
@@ -1685,6 +1694,15 @@ pyrowave_decoder_decode_gpu_buffer(pyrowave_decoder decoder,
 	pyrowave_device_signal_semaphore(device, decoder->pyro_device->queue_type, release);
 
 	return PYROWAVE_SUCCESS;
+}
+
+pyrowave_result
+pyrowave_decoder_decode_gpu_buffer(pyrowave_decoder decoder,
+                                   const pyrowave_gpu_sync_operation *acquire,
+                                   const pyrowave_gpu_sync_operation *release,
+                                   const pyrowave_gpu_buffers *buffers)
+{
+	return pyrowave_decoder_decode_gpu_buffer_with_context_timing(decoder, acquire, release, buffers, nullptr);
 }
 
 pyrowave_result

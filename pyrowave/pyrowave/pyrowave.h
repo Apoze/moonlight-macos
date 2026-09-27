@@ -620,6 +620,16 @@ pyrowave_decoder_decode_gpu_buffer(pyrowave_decoder decoder,
                                    const pyrowave_gpu_sync_operation *release,
                                    const pyrowave_gpu_buffers *buffers);
 
+// Diagnostic variant. context_wait_us is the CPU wall time spent advancing
+// Granite's frame context before recording this frame's decode commands.
+// Pass NULL when this measurement is not needed.
+PYROWAVE_PUBLIC_API pyrowave_result
+pyrowave_decoder_decode_gpu_buffer_with_context_timing(pyrowave_decoder decoder,
+                                                       const pyrowave_gpu_sync_operation *acquire,
+                                                       const pyrowave_gpu_sync_operation *release,
+                                                       const pyrowave_gpu_buffers *buffers,
+                                                       uint64_t *context_wait_us);
+
 // A command buffer must not be set on pyrowave_device.
 PYROWAVE_PUBLIC_API pyrowave_result
 pyrowave_decoder_decode_cpu_buffer_synchronous(pyrowave_decoder decoder, const pyrowave_cpu_buffer *buffers);

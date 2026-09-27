@@ -80,13 +80,19 @@ Without cadence smoothing this matches the lateness the delay calibrator sees.
 When that bound is nearer than the 1 ms silence, the silence shrinks to
 `max(bound, lastUniquePacket + 250 us)`, and the receive loop wakes a
 millisecond early and polls without blocking so the release is not rounded
-late. A frame still receiving packets is never cut: each unique packet renews
-the 250 us floor, so a genuinely slow burst remains late and visible to the
-buffer instead of silently turning into blur that the calibrator cannot see.
+late. A frame with gaps shorter than 250 us stays open because each unique
+packet renews the floor. Longer paced gaps can expire a late frame while the
+host is still sending it: the host sends in 1 ms pacing groups, and a
+deterministic zero-loss 800 us gap caused the queue to mark and reject two
+later detail packets. This can create blur without network loss. It is separate
+from the sustained decode backlog measured in the 2026-09-26 4K capture:
+only 661 of 127,960 decoded frames were partial, while intact frames still
+took 10.05 ms per decode call on average.
 The same critical-prefix, parity and final-block conditions apply, and such
 releases log as "on-time deadline" instead of "packet silence". The controller
-is unchanged (replay of `162709` is identical); no live capture has measured it
-yet.
+is unchanged (replay of `162709` is identical). A bounded Desktop capture on
+2026-09-27 observed 61 partial frames out of 410, all delivered at the on-time
+deadline; it cannot distinguish true network drops from early expiration.
 
 On Windows, `initializePyroWave()` creates `D3D11VARenderer` and a PyroWave
 Vulkan device matched by adapter LUID. Decode submits into one of ten D3D11-owned
@@ -157,6 +163,27 @@ The "Average decoding time" statistic runs from the reassembled frame's
 enqueue in moonlight-common-c to decoder output, so it includes time waiting in
 the 15-frame decode-unit queue; the wait is shown separately. When that queue
 overflows it is flushed and an IDR is requested, which restarts cadence.
+
+PyroWave decode attribution (2026-09-27, over `8e95a0b4`): deep GPU diagnostics
+add three events to the independent GPU CSV, without changing replay or pacing.
+`pyrowave_phases` uses `a..e` for CPU wall microseconds spent parsing,
+pushing/validating packets, acquiring/allocating output, submitting decode (or
+synchronous readback), and releasing/referencing output. Its object field is
+decode success; failed calls retain the phase in which they failed. These
+durations include any resource-reuse waits and are not GPU execution times.
+`pyrowave_context_wait.a` isolates the CPU wall time inside Granite's
+`next_frame_context()` from the larger submit phase. This advances one of two
+codec frame contexts and can wait for previously submitted GPU work; the
+timing is zero on non-shared/readback paths.
+`pyrowave_payload` records framed bytes in object, and surviving payload bytes,
+received block records, announced blocks, stripped padding bytes and partial
+status in `a..e`. At teardown, a decoder that recorded phase diagnostics logs
+the codec's existing GPU history, including Dequant and iDWT durations per codec
+frame context, before imported-image teardown advances extra contexts. Those
+are aggregated delayed GPU query results, not per-frame completion timestamps.
+The diagnostics are intended to distinguish a change in received content from
+GPU backpressure when the host changes; they do not establish host-OS causality
+from the older aggregate `packet_send` span alone.
 
 PyroWave calibration (2026-09-26, over `41312909`): select PyroWave in
 Settings > Video codec to show Calibrate PyroWave. The codec selector and

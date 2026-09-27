@@ -205,12 +205,26 @@ void checkLinuxClientDecode(const std::vector<uint8_t>& records, const Planes& s
         av_frame_free(&frame);
         frame = av_frame_alloc();
         const auto start = std::chrono::steady_clock::now();
-        const bool decoded = client.decode(records.data(), records.size(), {}, 0, frame);
+        PyroWaveDecoder::DecodeDiagnostics diagnostics;
+        const bool decoded = client.decode(records.data(), records.size(), {}, 0, frame,
+                                            i == k_Timed + 2 ? &diagnostics : nullptr);
         const auto submitted = std::chrono::steady_clock::now();
         if (!decoded) {
             expect(false, label + ": Linux client decode: " + client.lastError());
             av_frame_free(&frame);
             return;
+        }
+        if (i == k_Timed + 2) {
+            uint64_t attributedUs = 0;
+            for (auto us : diagnostics.phaseUs) attributedUs += us;
+            const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(submitted - start).count();
+            expect(attributedUs <= uint64_t(elapsedUs), label + ": diagnostic phases do not overlap");
+            expect(diagnostics.contextWaitUs <= diagnostics.phaseUs[3],
+                   label + ": frame-context wait is part of decode submission");
+            expect(!diagnostics.partial && diagnostics.receivedBlocks == diagnostics.announcedBlocks,
+                   label + ": diagnostics identify intact payload");
+            expect(diagnostics.payloadBytes > 0 && diagnostics.payloadBytes <= records.size(),
+                   label + ": diagnostic payload byte bounds");
         }
         if (shared) {
             pl_frame mapped = {};
