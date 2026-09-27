@@ -794,8 +794,7 @@ Flickable {
                             // Each test frame is drawn at this screen's size, as a stream would be
                             PyroWaveCalibrator.start(calibrationDialog.testFps,
                                                      Math.round(Screen.width * Screen.devicePixelRatio),
-                                                     Math.round(Screen.height * Screen.devicePixelRatio),
-                                                     StreamingPreferences.vrrLatencyMode)
+                                                     Math.round(Screen.height * Screen.devicePixelRatio))
                         }
                     }
 
@@ -831,10 +830,10 @@ Flickable {
                     ])
                     readonly property var samples: PyroWaveCalibrator.results
                     readonly property var tierColors: ({
-                        "full": "#66bb6a",
-                        "reduced": "#ffca28",
-                        "low": "#ef5350",
-                        "slow": "#9e9e9e",
+                        "any": "#66bb6a",
+                        "vrr": "#ffca28",
+                        "vrrLarge": "#ff9800",
+                        "slow": "#ef5350",
                         "error": "#9e9e9e"
                     })
 
@@ -850,12 +849,12 @@ Flickable {
                     }
 
                     function canApply(option) {
-                        return option && option.valid && option.keepsUp && !hdrUnavailable(option)
+                        return option && option.valid && !hdrUnavailable(option)
                     }
 
                     function headline(option, hdr) {
                         var format = hdr ? qsTr("HDR (10-bit)") : qsTr("SDR (8-bit)")
-                        if (option && option.keepsUp) return format + " · " + qsTr("%1 Mbps").arg(option.bitrateKbps / 1000)
+                        if (option && option.valid) return format + " · " + qsTr("%1 Mbps").arg(option.bitrateKbps / 1000)
                         return format
                     }
 
@@ -864,9 +863,10 @@ Flickable {
                         if (option.tier === "error") return option.error
                         if (option.tier === "slow") return qsTr("Can't keep up")
                         if (hdrUnavailable(option)) return qsTr("No HDR display")
-                        var text = option.tier === "full" ? qsTr("Full quality") :
-                                   option.tier === "reduced" ? qsTr("Reduced quality") : qsTr("Low quality")
-                        if (option.nearLimit) text += " · " + qsTr("near limit")
+                        var text = option.tier === "any" ? qsTr("Any display") :
+                                   option.tier === "vrr" ? qsTr("Needs VRR") : qsTr("Needs VRR · Smooth mode")
+                        if (option.quality === "reduced") text += " · " + qsTr("Reduced quality")
+                        else if (option.quality === "low") text += " · " + qsTr("Low quality")
                         return text
                     }
 
@@ -875,31 +875,23 @@ Flickable {
                         return tierColors[option.tier]
                     }
 
-                    function latencyModeName() {
-                        for (var i = 0; i < vrrLatencyModeListModel.count; i++) {
-                            if (vrrLatencyModeListModel.get(i).val === StreamingPreferences.vrrLatencyMode) {
-                                return vrrLatencyModeListModel.get(i).text
-                            }
-                        }
-                        return ""
-                    }
-
-                    function lateness(option) {
-                        return qsTr("Its slowest frame in 2000 finishes %1 ms late; the %2 VRR buffer absorbs up to %3 ms.")
-                                .arg(option.lateMs.toFixed(1)).arg(latencyModeName()).arg(option.bufferMs.toFixed(1))
+                    function frameCost(option) {
+                        return qsTr("99% of frames take up to %1 ms to decode and draw, %2% of each frame at %3 FPS.")
+                                .arg(option.frameMs.toFixed(1)).arg(option.loadPercent).arg(testFps)
                     }
 
                     function optionDetail(option) {
                         if (!option || !option.valid) return ""
                         if (!option.keepsUp) {
-                            return qsTr("Decoding and drawing use %1% of each frame at %2 FPS.").arg(option.loadPercent).arg(testFps) +
-                                    " " + lateness(option) + " " +
-                                    qsTr("A lower bitrate doesn't make this device fast enough, so the stream would stutter.")
+                            return frameCost(option) + " " +
+                                    qsTr("A lower bitrate doesn't make this device fast enough, so the stream will stutter or fall behind. You can still use it.")
                         }
-                        var details = [qsTr("Decoding and drawing use %1% of each frame at %2 FPS.")
-                                       .arg(option.loadPercent).arg(testFps), lateness(option)]
-                        if (option.nearLimit) {
-                            details.push(qsTr("That leaves little of the buffer for host and network hiccups."))
+                        var details = [frameCost(option)]
+                        if (option.tier === "vrr") {
+                            details.push(qsTr("With VRR the occasional slow frame is shown slightly late; on a fixed-refresh display it would stutter."))
+                        }
+                        else if (option.tier === "vrrLarge") {
+                            details.push(qsTr("Slow frames use nearly the whole frame, so only the Smooth VRR latency mode's larger buffer hides them; other modes and fixed-refresh displays would stutter."))
                         }
                         details.push(qsTr("%1 Mbps reaches %2 dB on the codec author's quality scale; he recommends %3 Mbps (35 dB) for this format.")
                                      .arg(option.bitrateKbps / 1000).arg(option.qualityDb.toFixed(1))
@@ -977,10 +969,10 @@ Flickable {
 
                             Repeater {
                                 model: [
-                                    { tier: "full", text: qsTr("Full quality: reaches the codec author's recommended bitrate.") },
-                                    { tier: "reduced", text: qsTr("Reduced quality: somewhat below it; fine detail can soften in busy scenes.") },
-                                    { tier: "low", text: qsTr("Low quality: well below it; expect visible softness.") },
-                                    { tier: "slow", text: qsTr("Can't keep up: at %1 FPS, its slowest frames arrive later than the VRR buffer can hide.").arg(calibrationDialog.testFps) }
+                                    { tier: "any", text: qsTr("Any display: 99% of frames use at most 60% of each frame, leaving room for a live stream's extra work with or without VRR.") },
+                                    { tier: "vrr", text: qsTr("Needs VRR: slow frames use up to 80% of each frame. VRR hides the occasional late one; a fixed-refresh display may stutter.") },
+                                    { tier: "vrrLarge", text: qsTr("Needs VRR · Smooth mode: slow frames use nearly the whole frame. Only the Smooth VRR latency mode's larger buffer hides them.") },
+                                    { tier: "slow", text: qsTr("Can't keep up: at %1 FPS, more than 1 frame in 100 takes longer than a frame to decode and draw. Expect stutter; it can still be selected.").arg(calibrationDialog.testFps) }
                                 ]
                                 delegate: Row {
                                     spacing: 6
@@ -1004,7 +996,7 @@ Flickable {
                                 width: parent.width
                                 wrapMode: Text.Wrap
                                 font.pointSize: 9
-                                text: qsTr("\"Near limit\" formats keep all but 1 in 2000 frames on time, but their slowest frames use most of the %1 VRR buffer. Grades follow your VRR latency mode.").arg(calibrationDialog.latencyModeName())
+                                text: qsTr("Every format is tested at the codec author's recommended bitrate. \"Reduced quality\" or \"Low quality\" means the bitrate had to be lowered for this device to keep up.")
                             }
 
                             Row {

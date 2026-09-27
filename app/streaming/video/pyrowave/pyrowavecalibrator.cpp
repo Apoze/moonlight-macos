@@ -21,7 +21,6 @@
 #include <vector>
 
 #if defined(HAVE_PYROWAVE) && (defined(Q_OS_LINUX) || defined(Q_OS_WIN32))
-#include "streaming/video/ffmpeg-renderers/pacer/vrr/vrrtimingcontroller.h"
 #include "streaming/video/pyrowave/pyrowavedecoder.h"
 #include "streaming/video/pyrowave/pyrowaveframing.h"
 #include <vulkan/vulkan.h>
@@ -54,16 +53,21 @@ constexpr int kBitrateSearchSteps = 1;
 // Decoded frames waiting to be drawn, as a stream's decoder thread runs ahead
 // of its renderer.
 constexpr size_t kQueuedFrames = 3;
-// Frames timed per probe, and the share that must finish within the VRR
-// buffer: the slowest one in 2000 may exceed it.
-constexpr int kTimedFrames = 2000;
-constexpr double kOnTimeShare = 0.9995;
-// A format whose slowest frames need more than this share of the buffer
-// leaves little of it for host and network jitter.
-constexpr double kNearLimitBufferShare = 0.5;
+// Seconds of frames timed per probe, at least kMinimumTimedFrames, and the
+// share whose cost must fit the frame period.
+constexpr int kTimedSeconds = 3;
+constexpr int kMinimumTimedFrames = 300;
+constexpr double kCostPercentile = 0.99;
+// A live stream costs about a third more than this test (presentation,
+// network receive, host bursts, the shared power budget). Formats whose slow
+// frames use at most this share of the frame period stay smooth on any
+// display; up to the second share, VRR hides their occasional late frame;
+// beyond it, only a large VRR buffer does.
+constexpr double kAnyDisplayShare = 0.6;
+constexpr double kVrrShare = 0.8;
 // A lower bitrate is only searched when it cuts the GPU time per frame by at
 // least this share; otherwise passing at it would be run-to-run noise at the
-// edge of the buffer, bought with picture quality.
+// edge of the frame period, bought with picture quality.
 constexpr double kMinimumBitrateSaving = 0.1;
 
 struct Sample {
@@ -73,8 +77,8 @@ struct Sample {
     bool hdr = false;
     bool valid = false;
     bool keepsUp = false;
-    // Its slowest frames use most of the VRR buffer
-    bool nearLimit = false;
+    // Share of the frame period its kCostPercentile frame uses
+    double share = 0;
     // The link capped the bitrate below the author's recommendation
     bool linkLimited = false;
     // The bitrate was lowered below the cap so this device keeps up
@@ -83,13 +87,10 @@ struct Sample {
     int bitrateKbps = 0;
     double qualityDb = 0;
     // At bitrateKbps or, when the format can't keep up, the lowest bitrate
-    // tried: mean GPU time per frame and its share of the frame period, and
-    // how late the slowest frames finish at the stream's pace
+    // tried: the kCostPercentile GPU time per frame, and its share of the
+    // frame period
     double frameMs = 0;
     double load = 0;
-    double lateMs = 0;
-    // The lateness the VRR buffer absorbs in the chosen latency mode
-    double bufferMs = 0;
     QString error;
 };
 
@@ -414,50 +415,24 @@ std::vector<uint8_t> frameRecords(const std::vector<uint8_t>& bitstream,
 
 struct Probe {
     bool ok = false;
-    // Mean GPU time per frame, and its share of the frame period
+    // Mean GPU time per frame, used to stop a format early and to compare
+    // bitrates
+    double meanMs = 0;
+    // The kCostPercentile GPU time per frame, and its share of the frame period
     double frameMs = 0;
     double load = 0;
-    // Frames are served slower than they arrive, so lateness only grows
+    // Frames are served slower than they arrive, so the queue only grows
     bool overloaded = false;
-    // How much later than the typical frame the kOnTimeShare frame finishes
-    double lateMs = 0;
     QString error;
 };
 
-// Frames arrive every periodMs and are served in order in the measured
-// per-frame times, each starting once it has arrived and the previous one is
-// done, as in a stream's decode queue. Replaying measured times on exact
-// arrivals keeps the test's own thread wake-ups out of the result.
-double lateness(const std::vector<double>& serviceMs, double periodMs)
+double percentile(std::vector<double> values, double share)
 {
-    if (serviceMs.empty()) return 0;
-    std::vector<double> latency;
-    latency.reserve(serviceMs.size());
-    double ready = 0;
-    for (size_t i = 0; i < serviceMs.size(); ++i) {
-        const double arrival = double(i) * periodMs;
-        ready = std::max(arrival, ready) + serviceMs[i];
-        latency.push_back(ready - arrival);
-    }
-    std::sort(latency.begin(), latency.end());
-    const double typical = latency[latency.size() / 2];
-    const size_t index = std::min(latency.size() - 1,
-                                  size_t(std::ceil(double(latency.size()) * kOnTimeShare)) - 1);
-    return latency[index] - typical;
-}
-
-// The lateness the VRR pacer's playout buffer absorbs in a latency mode: its
-// per-period cap, bounded by its absolute ceiling
-double vrrBufferMs(int latencyMode, int fps)
-{
-    VrrSessionConfig config;
-    config.latencyMode = latencyMode;
-    config.streamRateHz = fps;
-    const VrrTimingParameters parameters = vrrTimingParametersForSession(config);
-    const double periodMs = 1000.0 / fps;
-    const double capMs = parameters.playoutDelayCapSourcePeriodPerMille > 0 ?
-        periodMs * parameters.playoutDelayCapSourcePeriodPerMille / 1000.0 : periodMs;
-    return std::min(capMs, parameters.playoutDelayMaximumUs / 1000.0);
+    if (values.empty()) return 0;
+    std::sort(values.begin(), values.end());
+    const size_t index = std::min(values.size() - 1,
+                                  size_t(std::ceil(double(values.size()) * share)) - 1);
+    return values[index];
 }
 
 // One format's encoder, decoder and render path; probe() measures one bitrate.
@@ -507,7 +482,7 @@ public:
     // A synthetic frame encoded at the bitrate's per-frame budget, decoded and
     // drawn back to back. A short run warms clocks and compiles shaders and
     // stops a format that can't sustain the frame rate at all; unless quick,
-    // the timed run's per-frame times are replayed at the stream's pace.
+    // a timed run follows.
     Probe probe(int bitrateKbps, bool quick = false)
     {
         Probe probe;
@@ -516,24 +491,23 @@ public:
             return probe;
         }
         const double periodMs = 1000.0 / m_Fps;
-        const double availableMs = periodMs * kPeriodShare;
         std::vector<double> serviceMs;
         if (!run(std::max(24, m_Fps / 2), serviceMs)) {
             probe.error = runError();
             return probe;
         }
         auto summarize = [&] {
-            probe.frameMs = std::accumulate(serviceMs.begin(), serviceMs.end(), 0.0) / std::max<size_t>(1, serviceMs.size());
+            probe.meanMs = std::accumulate(serviceMs.begin(), serviceMs.end(), 0.0) / serviceMs.size();
+            probe.frameMs = percentile(serviceMs, kCostPercentile);
             probe.load = probe.frameMs / periodMs;
-            probe.overloaded = probe.frameMs >= availableMs;
-            probe.lateMs = lateness(serviceMs, availableMs);
+            probe.overloaded = probe.meanMs >= periodMs * kPeriodShare;
         };
         summarize();
         probe.ok = true;
         if (probe.overloaded || quick) {
             return probe;
         }
-        if (!run(kTimedFrames, serviceMs)) {
+        if (!run(std::max(kMinimumTimedFrames, m_Fps * kTimedSeconds), serviceMs)) {
             probe.ok = false;
             probe.error = runError();
             return probe;
@@ -679,19 +653,17 @@ private:
 };
 
 // The highest bitrate up to the author's recommendation (and the link cap)
-// whose slowest frames still finish within the VRR buffer. If the top bitrate
+// at which the kCostPercentile frame still fits the frame period. If the top bitrate
 // misses, the floor is tried; if that keeps up, bisection on the quality scale
 // finds the highest bitrate that does.
 Sample calibrateFormat(pyrowave_device device, Renderer& renderer, int width, int height, int fps,
-                       bool chroma444, bool hdr, int linkCapKbps, double bufferMs,
-                       const std::atomic<bool>& cancelled)
+                       bool chroma444, bool hdr, int linkCapKbps, const std::atomic<bool>& cancelled)
 {
     Sample sample;
     sample.width = width;
     sample.height = height;
     sample.chroma444 = chroma444;
     sample.hdr = hdr;
-    sample.bufferMs = bufferMs;
     sample.guideKbps = roundUpKbps(pyroWaveRecommendedKbps(width, height, fps, chroma444, hdr));
     int topKbps = sample.guideKbps;
     if (linkCapKbps > 0 && linkCapKbps < topKbps) {
@@ -701,8 +673,9 @@ Sample calibrateFormat(pyrowave_device device, Renderer& renderer, int width, in
     const auto quality = [&](int kbps) {
         return pyroWaveQualityDb(width, height, fps, chroma444, hdr, kbps);
     };
+    const double availableMs = 1000.0 / fps * kPeriodShare;
     const auto keepsUp = [&](const Probe& probe) {
-        return probe.ok && !probe.overloaded && probe.lateMs <= bufferMs;
+        return probe.ok && !probe.overloaded && probe.frameMs <= availableMs;
     };
 
     FormatTester tester(device, renderer, width, height, fps, chroma444, hdr, cancelled);
@@ -710,13 +683,14 @@ Sample calibrateFormat(pyrowave_device device, Renderer& renderer, int width, in
         sample.error = tester.error();
         return sample;
     }
-    // A stall elsewhere on the system can land in any timed run, so a miss
-    // that isn't plain overload is measured once more and the better run kept.
+    // A stall elsewhere on the system can land in any timed run, so a miss by
+    // a format whose throughput keeps up is measured once more and the better
+    // run kept.
     const auto measure = [&](int kbps) {
         Probe probe = tester.probe(kbps);
         if (probe.ok && !probe.overloaded && !keepsUp(probe) && !cancelled.load()) {
             const Probe again = tester.probe(kbps);
-            if (again.ok && again.lateMs < probe.lateMs) probe = again;
+            if (again.ok && (keepsUp(again) || again.frameMs < probe.frameMs)) probe = again;
         }
         return probe;
     };
@@ -730,17 +704,19 @@ Sample calibrateFormat(pyrowave_device device, Renderer& renderer, int width, in
     if (!keepsUp(best)) {
         const int floorKbps = roundDownKbps(pyroWaveKbpsForQuality(width, height, fps, chroma444, hdr,
                                                                    kFloorQualityDb));
+        // Still selectable: a lower bitrate doesn't help, so it keeps the top one
         const auto cantKeepUp = [&](const Probe& probe) {
+            sample.bitrateKbps = topKbps;
+            sample.qualityDb = quality(topKbps);
             sample.frameMs = probe.frameMs;
             sample.load = probe.load;
-            sample.lateMs = probe.lateMs;
             return sample;
         };
         if (floorKbps >= topKbps) {
             return cantKeepUp(best);
         }
         const Probe floorCost = tester.probe(floorKbps, true);
-        if (!floorCost.ok || floorCost.frameMs > best.frameMs * (1.0 - kMinimumBitrateSaving)) {
+        if (!floorCost.ok || floorCost.meanMs > best.meanMs * (1.0 - kMinimumBitrateSaving)) {
             return cantKeepUp(best);
         }
         const Probe floor = floorCost.overloaded ? floorCost : measure(floorKbps);
@@ -768,16 +744,15 @@ Sample calibrateFormat(pyrowave_device device, Renderer& renderer, int width, in
         }
     }
     sample.keepsUp = true;
-    sample.nearLimit = best.lateMs > bufferMs * kNearLimitBufferShare;
+    sample.share = best.frameMs / availableMs;
     sample.bitrateKbps = bestKbps;
     sample.qualityDb = quality(bestKbps);
     sample.frameMs = best.frameMs;
     sample.load = best.load;
-    sample.lateMs = best.lateMs;
     return sample;
 }
 
-QString runSweep(int fps, int displayWidth, int displayHeight, int linkCapKbps, double bufferMs,
+QString runSweep(int fps, int displayWidth, int displayHeight, int linkCapKbps,
                  const std::atomic<bool>& cancelled, const std::function<void(const Sample&)>& report)
 {
     pyrowave_device device = nullptr;
@@ -801,20 +776,19 @@ QString runSweep(int fps, int displayWidth, int displayHeight, int linkCapKbps, 
                     for (bool hdr : {true, false}) {
                         if (cancelled.load()) break;
                         const Sample sample = calibrateFormat(device, renderer, resolution[0], resolution[1],
-                                                              fps, chroma444, hdr, linkCapKbps, bufferMs,
-                                                              cancelled);
+                                                              fps, chroma444, hdr, linkCapKbps, cancelled);
                         // A format cut short by cancellation has no result
                         if (cancelled.load()) break;
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                                     "PyroWave calibration: %dx%d %s %d-bit %d FPS: %s, %d kbps (guide %d, link cap %d), "
-                                    "%.1f dB, GPU %.2f ms/frame (%.0f%% of the frame), p99.95 %.2f ms late "
-                                    "(VRR buffer %.2f ms)%s%s",
+                                    "%.1f dB, GPU p99 %.2f ms/frame (%.0f%% of the frame)%s%s",
                                     sample.width, sample.height, sample.chroma444 ? "4:4:4" : "4:2:0",
                                     sample.hdr ? 10 : 8, fps,
                                     !sample.valid ? "error" : !sample.keepsUp ? "falls behind" :
-                                    sample.nearLimit ? "keeps up near the limit" : "keeps up",
+                                    sample.share > kVrrShare ? "needs a large VRR buffer" :
+                                    sample.share > kAnyDisplayShare ? "needs VRR" : "keeps up on any display",
                                     sample.bitrateKbps, sample.guideKbps, linkCapKbps, sample.qualityDb,
-                                    sample.frameMs, sample.load * 100, sample.lateMs, sample.bufferMs,
+                                    sample.frameMs, sample.load * 100,
                                     sample.error.isEmpty() ? "" : ", error: ",
                                     sample.error.isEmpty() ? "" : sample.error.toUtf8().constData());
                         report(sample);
@@ -829,10 +803,17 @@ QString runSweep(int fps, int displayWidth, int displayHeight, int linkCapKbps, 
 
 #endif
 
+// Smoothness risk rather than picture quality
 QString tier(const Sample& sample)
 {
     if (!sample.valid) return QStringLiteral("error");
     if (!sample.keepsUp) return QStringLiteral("slow");
+    if (sample.share > kVrrShare) return QStringLiteral("vrrLarge");
+    return sample.share > kAnyDisplayShare ? QStringLiteral("vrr") : QStringLiteral("any");
+}
+
+QString quality(const Sample& sample)
+{
     // The recommendation is rounded up, so it always reaches the full level
     if (sample.qualityDb >= kFullQualityDb - 0.01) return QStringLiteral("full");
     if (sample.qualityDb >= kReducedQualityDb) return QStringLiteral("reduced");
@@ -847,8 +828,8 @@ QVariantMap toMap(const Sample& sample)
             {QStringLiteral("hdr"), sample.hdr},
             {QStringLiteral("valid"), sample.valid},
             {QStringLiteral("keepsUp"), sample.keepsUp},
-            {QStringLiteral("nearLimit"), sample.nearLimit},
             {QStringLiteral("tier"), tier(sample)},
+            {QStringLiteral("quality"), quality(sample)},
             {QStringLiteral("linkLimited"), sample.linkLimited},
             {QStringLiteral("deviceLimited"), sample.deviceLimited},
             {QStringLiteral("guideKbps"), sample.guideKbps},
@@ -856,8 +837,6 @@ QVariantMap toMap(const Sample& sample)
             {QStringLiteral("qualityDb"), sample.qualityDb},
             {QStringLiteral("frameMs"), sample.frameMs},
             {QStringLiteral("loadPercent"), qRound(sample.load * 100)},
-            {QStringLiteral("lateMs"), sample.lateMs},
-            {QStringLiteral("bufferMs"), sample.bufferMs},
             {QStringLiteral("error"), sample.error}};
 }
 
@@ -879,7 +858,7 @@ void PyroWaveCalibrator::cancel()
     if (m_Cancel) m_Cancel->store(true);
 }
 
-void PyroWaveCalibrator::start(int fps, int displayWidth, int displayHeight, int latencyMode)
+void PyroWaveCalibrator::start(int fps, int displayWidth, int displayHeight)
 {
     if (m_Running || (m_Worker && m_Worker->isRunning())) return;
     if (fps < 10 || fps > 240) {
@@ -912,21 +891,19 @@ void PyroWaveCalibrator::start(int fps, int displayWidth, int displayHeight, int
 #if !defined(HAVE_PYROWAVE) || (!defined(Q_OS_LINUX) && !defined(Q_OS_WIN32))
     Q_UNUSED(displayWidth);
     Q_UNUSED(displayHeight);
-    Q_UNUSED(latencyMode);
     m_Results.clear();
     m_Message = tr("Local PyroWave calibration requires a supported GPU decoder.");
     emit changed();
 #else
     m_Running = true;
     m_Results.clear();
-    m_Message = tr("Timing %1 frames of each format on this device at %2 FPS…").arg(kTimedFrames).arg(fps);
+    m_Message = tr("Timing each format on this device at %1 FPS…").arg(fps);
     emit changed();
 
-    const double bufferMs = vrrBufferMs(latencyMode, fps);
     auto cancelled = std::make_shared<std::atomic<bool>>(false);
     m_Cancel = cancelled;
-    m_Worker = QThread::create([this, fps, displayWidth, displayHeight, linkCapKbps, bufferMs, cancelled] {
-        const QString error = runSweep(fps, displayWidth, displayHeight, linkCapKbps, bufferMs, *cancelled,
+    m_Worker = QThread::create([this, fps, displayWidth, displayHeight, linkCapKbps, cancelled] {
+        const QString error = runSweep(fps, displayWidth, displayHeight, linkCapKbps, *cancelled,
                                        [this](const Sample& sample) {
             const QVariantMap result = toMap(sample);
             QMetaObject::invokeMethod(this, [this, result] {

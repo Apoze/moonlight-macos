@@ -172,16 +172,11 @@ PQ as a stream tags them, `rgba8`/sRGB for 8-bit) and waits with a one-pixel
 download. On Windows the one-pixel D3D11 decode-completion readback runs on the
 decoding thread, nothing is drawn, and decoding may use three quarters of each
 frame period. A short run (half a second of frames) warms clocks and shaders
-and stops a format whose mean cost exceeds the period. A timed run of 2000
-frames is then replayed through a queue with exact arrivals at the stream's
-frame rate (each frame starts when it has arrived and the previous one is
-done), and the p99.95 lateness beyond the median frame is compared with the
-VRR pacer's playout buffer for the user's latency mode
-(`vrrTimingParametersForSession()`: 1 source period in Low Latency, 2 in
-Balanced Target up to 16 ms, 4 in Smooth up to 24 ms). A format keeps up when that lateness fits the
-buffer, and is "near limit" above half of it. A miss that isn't plain overload
-is measured once more and the better run kept, because a system stall can land
-in any run.
+and stops a format whose mean cost exceeds the period. A timed run of three
+seconds of frames (at least 300) follows, and a format keeps up when its p99
+per-frame cost fits the frame period. The grade does not depend on the VRR latency mode. A miss that isn't
+plain overload is measured once more and the better run kept, because a system
+stall can land in any run.
 
 The top bitrate is the author's 35 dB recommendation rounded up to 5 Mbps,
 capped at 80% of the fastest connected wired link
@@ -189,14 +184,20 @@ capped at 80% of the fastest connected wired link
 receive speed), leaving room for record padding, FEC, RTP/UDP/IP headers,
 audio and input; Wi-Fi or no wired link leaves it uncapped with a note. If the
 top bitrate misses, a quick run at the regression floor (30 dB) checks whether
-a lower bitrate cuts the GPU time per frame by at least 10%. If not, the format
-is "Can't keep up" and cannot be selected: a pass at the lower bitrate would be
-noise at the buffer's edge, bought with picture quality. If it does, the floor
+a lower bitrate cuts the mean GPU time per frame by at least 10%. If not, the
+format is "Can't keep up" at the top bitrate, which it applies if selected: a
+pass at the lower bitrate would be noise at the period's edge, bought with
+picture quality. If it does, the floor
 is timed and one bisection step on the dB scale finds the highest bitrate that
 keeps up. `pyroWaveQualityDb()` inverts the author's regression (linear between
 whole-dB levels, extrapolated below 30 dB) to grade the chosen bitrate: at
-least 35 dB is Full quality (green), 32-35 dB Reduced (yellow), below 32 dB Low
-(red). Clicking a format applies the codec, resolution, chroma, HDR and the
+least 35 dB is full quality, 32-35 dB reduced, below 32 dB low, shown as text.
+The color is smoothness risk, with margin for a live stream costing about a
+third more than the test (4K 4:4:4 10-bit took 8.3-9.1 ms per frame while
+backlogged live against a 6.7 ms test mean): green ("Any display") at a p99
+cost of at most 60% of the period, yellow ("Needs VRR") up to 80%, orange
+("Needs VRR · Smooth mode", the large buffer) up to the full period, and red
+("Can't keep up") beyond it. Clicking a format applies the codec, resolution, chroma, HDR and the
 bitrate shown, and turns off automatic bitrate. A full sweep at 116 FPS takes
 about 100 s on the Deck.
 
@@ -206,17 +207,20 @@ took 7.75-8.16 ms per frame from 330 to 850 Mbps, so lowering bitrate rarely
 rescues a format. With the render overlapped as in a stream, mean costs were
 6.4-6.8 ms for 4K 4:4:4 10-bit (74-79% of the period), 5.6-6.2 ms for 4K 4:4:4
 8-bit, 3.6-4.2 ms for 4K 4:2:0 10-bit and 3.3-3.8 ms for 1440p 4:4:4 10-bit.
-The Balanced sweep graded every format as keeping up; 4K 4:4:4 10-bit's p99.95
-lateness was 10-14 ms of the 17.2 ms buffer (near limit), 4K 4:4:4 8-bit's
-7.3-12 ms, and every other format's under 6.2 ms. In Low Latency (8.6 ms) 4K
-4:4:4 10-bit reached 10.3-11.8 ms and cannot keep up. Live, 4K 4:4:4 HDR at 116
+Two sweeps on 2026-09-26 gave p99 costs of 9.4-10.3 ms for 4K 4:4:4 10-bit
+(can't keep up), 8.4-8.5 ms for 4K 4:4:4 8-bit (near limit), 6.1-7.0 ms for 4K
+4:2:0, 5.4-6.0 ms for 1440p 4:4:4 and under 4.6 ms for everything smaller; only
+4K 4:2:0 8-bit changed grade between runs, at the near-limit edge. Live, 4K 4:4:4 HDR at 116
 FPS held on 2026-09-25 but on 2026-09-26 the decode-unit queue overflowed every
 1-2 s (decoder wait p90 42-120 ms, an IDR each time), while 4K 4:2:0 and 1440p
 4:4:4 stayed clean; the synthetic test does not include presentation, network
 receive, host cadence bursts or the Deck's shared CPU/GPU power budget, which
 is why near-limit formats carry a warning.
 
-Earlier measures were misleading. Timing a paced run with the test's own
+Earlier measures were misleading. Grading the p99.95 lateness of a queue
+replay against the VRR buffer let the buffer hide 4K 4:4:4 10-bit's overload
+under Balanced, while one system stall in 2000 frames marked 1080p 4:2:0 and
+800p 4:4:4 (27-31% of the period) near limit. Timing a paced run with the test's own
 threads sleeping to each arrival put scheduler jitter into the tail: three
 identical 4K 4:4:4 10-bit runs gave p99 latency of 51, 12.7 and 22 ms, while
 the saturated replay's p99 cost was 9.26-9.30 ms. Drawing serially (decode,

@@ -10,8 +10,8 @@
 #include <memory>
 
 // Finds, for each resolution and PyroWave format at one frame rate, the
-// highest bitrate at which this device decodes and draws all but the slowest
-// frame in 2000 within the VRR buffer, capped by its wired link speed, and
+// highest bitrate at which this device decodes and draws 99% of frames within
+// the frame period, capped by its wired link speed, and
 // grades it on the codec author's quality scale. It does not change settings,
 // and it cannot measure the host or LAN.
 class PyroWaveCalibrator : public QObject
@@ -33,9 +33,8 @@ public:
 
     // displayWidth/displayHeight size the render that each test frame goes
     // through, as a stream drawing to that display would. Zero renders at the
-    // stream's own resolution. latencyMode (StreamingPreferences::VrrLatencyMode)
-    // sets the VRR buffer that the slowest frames must finish within.
-    Q_INVOKABLE void start(int fps, int displayWidth = 0, int displayHeight = 0, int latencyMode = 1);
+    // stream's own resolution.
+    Q_INVOKABLE void start(int fps, int displayWidth = 0, int displayHeight = 0);
     // Stops after the format being tested; its finished results stay.
     Q_INVOKABLE void cancel();
 
