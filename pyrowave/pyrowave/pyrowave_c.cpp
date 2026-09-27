@@ -1534,7 +1534,38 @@ struct pyrowave_decoder_opaque
 	ChromaSubsampling chroma = {};
 	int width = 0;
 	int height = 0;
+	struct CachedOutput
+	{
+		pyrowave_gpu_buffers buffers;
+		WrappedViewBuffers views;
+	};
+	bool cache_output_views = false;
+	std::vector<CachedOutput> output_views;
 };
+
+void pyrowave_decoder_set_output_view_cache(pyrowave_decoder decoder, bool enable)
+{
+	Util::set_thread_logging_interface(&null_logger);
+	decoder->cache_output_views = enable;
+	decoder->output_views.clear();
+	if (enable)
+		decoder->output_views.reserve(16);
+}
+
+static bool same_output_views(const pyrowave_gpu_buffers &a, const pyrowave_gpu_buffers &b)
+{
+	for (unsigned i = 0; i < 3; i++)
+	{
+		const auto &x = a.planes[i];
+		const auto &y = b.planes[i];
+		if (x.image != y.image || x.width != y.width || x.height != y.height ||
+		    x.image_format != y.image_format || x.view_format != y.view_format ||
+		    x.mip_level != y.mip_level || x.layer != y.layer || x.aspect != y.aspect ||
+		    x.swizzle != y.swizzle || x.layout != y.layout)
+			return false;
+	}
+	return true;
+}
 
 bool pyrowave_decoder_device_prefers_fragment_path(pyrowave_device device)
 {
@@ -1624,9 +1655,29 @@ pyrowave_decoder_decode_gpu_buffer_with_context_timing(pyrowave_decoder decoder,
 		*context_wait_us = std::chrono::duration_cast<std::chrono::microseconds>(
 			std::chrono::steady_clock::now() - before_context).count();
 
-	WrappedViewBuffers views = {};
-	if (!views.wrap(device, buffers, decoder->fragment_path ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : VK_IMAGE_USAGE_STORAGE_BIT))
-		return PYROWAVE_ERROR_OUT_OF_HOST_MEMORY;
+	WrappedViewBuffers transient_views = {};
+	const WrappedViewBuffers *views = nullptr;
+	if (decoder->cache_output_views)
+	{
+		for (const auto &cached : decoder->output_views)
+			if (same_output_views(cached.buffers, *buffers))
+			{
+				views = &cached.views;
+				break;
+			}
+	}
+	if (!views)
+	{
+		if (!transient_views.wrap(device, buffers, decoder->fragment_path ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : VK_IMAGE_USAGE_STORAGE_BIT))
+			return PYROWAVE_ERROR_OUT_OF_HOST_MEMORY;
+		if (decoder->cache_output_views && decoder->output_views.size() < 16)
+		{
+			decoder->output_views.push_back({*buffers, std::move(transient_views)});
+			views = &decoder->output_views.back().views;
+		}
+		else
+			views = &transient_views;
+	}
 
 	// Just use normal graphics queue here since the result will likely be consumed there.
 	auto cmd = decoder->pyro_device->cmd
@@ -1660,7 +1711,7 @@ pyrowave_decoder_decode_gpu_buffer_with_context_timing(pyrowave_decoder decoder,
 		}
 	}
 
-	auto ret = decoder->decoder.decode(*cmd, views);
+	auto ret = decoder->decoder.decode(*cmd, *views);
 	if (!ret)
 	{
 		device->submit_discard(cmd);

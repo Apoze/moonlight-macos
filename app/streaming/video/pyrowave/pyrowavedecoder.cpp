@@ -395,6 +395,15 @@ bool PyroWaveDecoder::initialize(const Config& config, IPyroWaveSurfacePool* poo
         return false;
     }
 
+    // Both pools keep their fixed-size output images alive until this decoder
+    // is destroyed. Reuse their Vulkan views instead of creating and retiring
+    // three new views (and associated descriptors) for every frame.
+#ifdef _WIN32
+    pyrowave_decoder_set_output_view_cache(impl->decoder, true);
+#else
+    pyrowave_decoder_set_output_view_cache(impl->decoder, impl->vulkanPool != nullptr);
+#endif
+
 #ifdef _WIN32
     if (!impl->importFence(pool->exportPyroWaveDecodeFence(), impl->decodeSync) ||
             !impl->importFence(pool->exportPyroWaveReleaseFence(), impl->releaseSync)) {

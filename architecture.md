@@ -133,6 +133,33 @@ round-trip test decodes through both paths (shared planes read back with
 establish live-stream cadence or physical scanout. VRR policy and replay are
 unchanged.
 
+PyroWave client overhead reduction (2026-09-27, over `ccf21a1e`): the shared
+Windows/Linux framing parser checks packet loss once per frame, skips packet-map
+searches when intact, advances a cursor for forward record traversal when damaged,
+and retains its span allocation across parses. Record validation and loss recovery
+remain in place. A bounded 820,024-byte / 2,500-record / 684-packet microbenchmark
+measured about 225 us before versus 15 us after; 10,000 differential cases covering
+loss, padding, corruption and reused state matched the original parser.
+
+Both client shared-surface paths opt into a bounded C API output-view cache.
+The cache retains Vulkan image views for up to 16 distinct three-plane output
+descriptions, keyed by the image handle and every view field; additional outputs
+use transient views. The Windows ten-surface and Linux eight-surface pools keep
+their images alive until decoder teardown, which precedes renderer teardown.
+The cache defaults off for other C API callers and stays off for Linux synchronous
+readback. It changes neither image ownership nor acquire/release synchronization.
+Recreating an external output image requires disabling the cache first (or
+destroying the decoder), even if Vulkan later recycles the same image handle.
+
+An alternating off/on/on/off headless Deck comparison at 4K 4:4:4 R16, paced at
+120 FPS, measured CPU preparation/submission excluding context wait at 233 us
+uncached versus 209 us cached. Every output sample matched (full-plane hash).
+GPU completion averaged roughly 8.4-8.5 ms in both modes, with no established GPU
+throughput improvement. These synthetic results use an 8-bit source encoded to
+R16 output, not a live HDR or physical-scanout test. The round-trip regression
+rotates and poisons all eight Linux output surfaces, checks full output bytes,
+and covers 4:2:0/4:4:4 and R8/R16. Windows runtime performance is unverified.
+
 moonlight-common-c asks for an 8192-packet receive buffer on PyroWave video
 sockets. Linux silently clamps SO_RCVBUF to `net.core.rmem_max` (208 KB by
 default on SteamOS), and the kernel drops packets that overflow it; the library

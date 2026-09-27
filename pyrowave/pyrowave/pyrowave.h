@@ -585,6 +585,14 @@ pyrowave_decoder_device_prefers_fragment_path(pyrowave_device device);
 PYROWAVE_PUBLIC_API pyrowave_result
 pyrowave_decoder_create(const pyrowave_decoder_create_info *info, pyrowave_decoder *decoder);
 
+// Opt in when output images remain alive until the decoder is destroyed (or
+// this cache is disabled). Reuses Vulkan image views for up to 16 output sets.
+// All view metadata participates in the key. Disabled by default because an
+// application may otherwise destroy an image and later reuse its VkImage value.
+// This does not retain the caller's images or alter GPU synchronization.
+PYROWAVE_PUBLIC_API void
+pyrowave_decoder_set_output_view_cache(pyrowave_decoder decoder, bool enable);
+
 // Throws away all queued packets.
 PYROWAVE_PUBLIC_API void pyrowave_decoder_clear(pyrowave_decoder decoder);
 
