@@ -652,6 +652,114 @@ Flickable {
 
                 Label {
                     width: parent.width
+                    id: resVCCTitle
+                    text: qsTr("Video codec")
+                    font.pointSize: 12
+                    wrapMode: Text.Wrap
+                }
+
+                AutoResizingComboBox {
+                    // ignore setting the index at first, and actually set it when the component is loaded
+                    Component.onCompleted: {
+                        if (SystemProperties.hasPyroWave) {
+                            codecListModel.append({
+                                "text": qsTr("PyroWave (wired LAN, experimental)"),
+                                "val": StreamingPreferences.VCC_FORCE_PYROWAVE
+                            })
+                        }
+
+                        var saved_vcc = StreamingPreferences.videoCodecConfig
+
+                        // Default to Automatic (relevant if HDR is enabled,
+                        // where we will match none of the codecs in the list)
+                        currentIndex = 0
+
+                        for(var i = 0; i < codecListModel.count; i++) {
+                            var el_vcc = codecListModel.get(i).val;
+                            if (saved_vcc === el_vcc) {
+                                currentIndex = i
+                                break
+                            }
+                        }
+
+                        activated(currentIndex)
+                    }
+
+                    id: codecComboBox
+                    textRole: "text"
+                    model: ListModel {
+                        id: codecListModel
+                        ListElement {
+                            text: qsTr("Automatic (Recommended)")
+                            val: StreamingPreferences.VCC_AUTO
+                        }
+                        ListElement {
+                            text: qsTr("H.264")
+                            val: StreamingPreferences.VCC_FORCE_H264
+                        }
+                        ListElement {
+                            text: qsTr("HEVC (H.265)")
+                            val: StreamingPreferences.VCC_FORCE_HEVC
+                        }
+                        ListElement {
+                            text: qsTr("AV1")
+                            val: StreamingPreferences.VCC_FORCE_AV1
+                        }
+                    }
+                    // ::onActivated must be used, as it only listens for when the index is changed by a human
+                    onActivated : {
+                        if (enabled) {
+                            var wasPyroWave = slider.pyroWave
+                            StreamingPreferences.videoCodecConfig = codecListModel.get(currentIndex).val
+
+                            // PyroWave's useful bitrates are an order of magnitude above
+                            // the other codecs', so switching in or out resets a default.
+                            if (slider.pyroWave !== wasPyroWave && StreamingPreferences.autoAdjustBitrate) {
+                                StreamingPreferences.bitrateKbps = slider.defaultBitrate()
+                                slider.value = StreamingPreferences.bitrateKbps
+                            }
+                            else if (StreamingPreferences.bitrateKbps > slider.to) {
+                                StreamingPreferences.bitrateKbps = slider.to
+                                slider.value = StreamingPreferences.bitrateKbps
+                            }
+                        }
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 8000
+                    ToolTip.visible: hovered && slider.pyroWave
+                    ToolTip.text: qsTr("PyroWave is an intra-only GPU wavelet codec. It needs a wired connection with hundreds of Mbps to spare and a host with PyroWave support; other hosts fall back to H.264. On Linux, GPU readback and upload may limit frame rate.")
+                }
+
+                CheckBox {
+                    id: enableYUV444
+                    width: parent.width
+                    text: qsTr("Enable YUV 4:4:4")
+                    font.pointSize: 12
+
+                    checked: StreamingPreferences.enableYUV444
+                    onCheckedChanged: {
+                        // This is called on init, so only reset to default bitrate when checked state changes.
+                        if (StreamingPreferences.enableYUV444 != checked) {
+                            StreamingPreferences.enableYUV444 = checked
+                            if (StreamingPreferences.autoAdjustBitrate) {
+                                StreamingPreferences.bitrateKbps = slider.defaultBitrate();
+                                slider.value = StreamingPreferences.bitrateKbps
+                            }
+                        }
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 5000
+                    ToolTip.visible: hovered
+                    ToolTip.text: enabled ?
+                                      qsTr("Good for streaming desktop and text-heavy games, but not recommended for fast-paced games.")
+                                    :
+                                      qsTr("YUV 4:4:4 is not supported on this PC.")
+                }
+
+                Label {
+                    width: parent.width
                     id: bitrateTitle
                     text: qsTr("Video bitrate:")
                     font.pointSize: 12
@@ -783,7 +891,7 @@ Flickable {
                 Column {
                     width: parent.width
                     spacing: 5
-                    visible: SystemProperties.hasPyroWave
+                    visible: SystemProperties.hasPyroWave && slider.pyroWave
 
                     Button {
                         text: qsTr("Calibrate PyroWave")
@@ -1160,6 +1268,10 @@ Flickable {
                         if (!vrrForced) {
                             activated(currentIndex)
                         }
+
+                        // VRR skips activation to preserve the saved mode, but
+                        // the disabled control still needs its text measured.
+                        recalculateWidth()
                     }
 
                     Component.onCompleted: {
@@ -2150,87 +2262,6 @@ Flickable {
 
                 Label {
                     width: parent.width
-                    id: resVCCTitle
-                    text: qsTr("Video codec")
-                    font.pointSize: 12
-                    wrapMode: Text.Wrap
-                }
-
-                AutoResizingComboBox {
-                    // ignore setting the index at first, and actually set it when the component is loaded
-                    Component.onCompleted: {
-                        if (SystemProperties.hasPyroWave) {
-                            codecListModel.append({
-                                "text": qsTr("PyroWave (wired LAN, experimental)"),
-                                "val": StreamingPreferences.VCC_FORCE_PYROWAVE
-                            })
-                        }
-
-                        var saved_vcc = StreamingPreferences.videoCodecConfig
-
-                        // Default to Automatic (relevant if HDR is enabled,
-                        // where we will match none of the codecs in the list)
-                        currentIndex = 0
-
-                        for(var i = 0; i < codecListModel.count; i++) {
-                            var el_vcc = codecListModel.get(i).val;
-                            if (saved_vcc === el_vcc) {
-                                currentIndex = i
-                                break
-                            }
-                        }
-
-                        activated(currentIndex)
-                    }
-
-                    id: codecComboBox
-                    textRole: "text"
-                    model: ListModel {
-                        id: codecListModel
-                        ListElement {
-                            text: qsTr("Automatic (Recommended)")
-                            val: StreamingPreferences.VCC_AUTO
-                        }
-                        ListElement {
-                            text: qsTr("H.264")
-                            val: StreamingPreferences.VCC_FORCE_H264
-                        }
-                        ListElement {
-                            text: qsTr("HEVC (H.265)")
-                            val: StreamingPreferences.VCC_FORCE_HEVC
-                        }
-                        ListElement {
-                            text: qsTr("AV1")
-                            val: StreamingPreferences.VCC_FORCE_AV1
-                        }
-                    }
-                    // ::onActivated must be used, as it only listens for when the index is changed by a human
-                    onActivated : {
-                        if (enabled) {
-                            var wasPyroWave = slider.pyroWave
-                            StreamingPreferences.videoCodecConfig = codecListModel.get(currentIndex).val
-
-                            // PyroWave's useful bitrates are an order of magnitude above
-                            // the other codecs', so switching in or out resets a default.
-                            if (slider.pyroWave !== wasPyroWave && StreamingPreferences.autoAdjustBitrate) {
-                                StreamingPreferences.bitrateKbps = slider.defaultBitrate()
-                                slider.value = StreamingPreferences.bitrateKbps
-                            }
-                            else if (StreamingPreferences.bitrateKbps > slider.to) {
-                                StreamingPreferences.bitrateKbps = slider.to
-                                slider.value = StreamingPreferences.bitrateKbps
-                            }
-                        }
-                    }
-
-                    ToolTip.delay: 1000
-                    ToolTip.timeout: 8000
-                    ToolTip.visible: hovered && slider.pyroWave
-                    ToolTip.text: qsTr("PyroWave is an intra-only GPU wavelet codec. It needs a wired connection with hundreds of Mbps to spare and a host with PyroWave support; other hosts fall back to H.264. On Linux, GPU readback and upload may limit frame rate.")
-                }
-
-                Label {
-                    width: parent.width
                     id: rendererTitle
                     text: qsTr("Renderer")
                     font.pointSize: 12
@@ -2283,33 +2314,6 @@ Flickable {
                     onActivated : {
                         StreamingPreferences.rendererSelection = rendererListModel.get(currentIndex).val
                     }
-                }
-
-                CheckBox {
-                    id: enableYUV444
-                    width: parent.width
-                    text: qsTr("Enable YUV 4:4:4")
-                    font.pointSize: 12
-
-                    checked: StreamingPreferences.enableYUV444
-                    onCheckedChanged: {
-                        // This is called on init, so only reset to default bitrate when checked state changes.
-                        if (StreamingPreferences.enableYUV444 != checked) {
-                            StreamingPreferences.enableYUV444 = checked
-                            if (StreamingPreferences.autoAdjustBitrate) {
-                                StreamingPreferences.bitrateKbps = slider.defaultBitrate();
-                                slider.value = StreamingPreferences.bitrateKbps
-                            }
-                        }
-                    }
-
-                    ToolTip.delay: 1000
-                    ToolTip.timeout: 5000
-                    ToolTip.visible: hovered
-                    ToolTip.text: enabled ?
-                                      qsTr("Good for streaming desktop and text-heavy games, but not recommended for fast-paced games.")
-                                    :
-                                      qsTr("YUV 4:4:4 is not supported on this PC.")
                 }
 
                 CheckBox {

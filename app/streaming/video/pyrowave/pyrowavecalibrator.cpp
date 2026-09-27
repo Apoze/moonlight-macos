@@ -94,11 +94,6 @@ struct Sample {
     QString error;
 };
 
-int roundUpKbps(double kbps)
-{
-    return int(std::ceil(kbps / 5000.0)) * 5000;
-}
-
 int roundDownKbps(double kbps)
 {
     return int(std::floor(kbps / 5000.0)) * 5000;
@@ -664,7 +659,7 @@ Sample calibrateFormat(pyrowave_device device, Renderer& renderer, int width, in
     sample.height = height;
     sample.chroma444 = chroma444;
     sample.hdr = hdr;
-    sample.guideKbps = roundUpKbps(pyroWaveRecommendedKbps(width, height, fps, chroma444, hdr));
+    sample.guideKbps = pyroWaveRecommendedKbps(width, height, fps, chroma444, hdr);
     int topKbps = sample.guideKbps;
     if (linkCapKbps > 0 && linkCapKbps < topKbps) {
         topKbps = linkCapKbps;

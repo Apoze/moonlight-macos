@@ -158,8 +158,9 @@ enqueue in moonlight-common-c to decoder output, so it includes time waiting in
 the 15-frame decode-unit queue; the wait is shown separately. When that queue
 overflows it is flushed and an IDR is requested, which restarts cadence.
 
-PyroWave calibration (2026-09-26, over `41312909`): Settings > Calibrate
-PyroWave grades, at the selected FPS, 4K, 1440p, 1080p, 720p and (Linux)
+PyroWave calibration (2026-09-26, over `41312909`): select PyroWave in
+Settings > Video codec to show Calibrate PyroWave. The codec selector and
+YUV 4:4:4 checkbox sit above the bitrate controls. Calibration grades, at the selected FPS, 4K, 1440p, 1080p, 720p and (Linux)
 Deck-native 800p, each in 4:4:4/4:2:0 and HDR (10-bit)/SDR (8-bit). The worker
 refuses to run during a stream, reports each format as it finishes, and stops
 within a frame when the dialog closes (a format cut short has no result). For
@@ -178,8 +179,10 @@ per-frame cost fits the frame period. The grade does not depend on the VRR laten
 plain overload is measured once more and the better run kept, because a system
 stall can land in any run.
 
-The top bitrate is the author's 35 dB recommendation rounded up to 5 Mbps,
-capped at 80% of the fastest connected wired link
+The default bitrate and calibration's author recommendation use the same
+35 dB calculation rounded up to 5 Mbps, including the HDR allowance. The
+default no longer applies a separate 900 Mbps cap and needs no calibration.
+Calibration starts from that recommendation, capped at 80% of the fastest connected wired link
 (`NetworkBuffers::wiredLinkMbps()`: sysfs speed, or `GetAdaptersAddresses`
 receive speed), leaving room for record padding, FEC, RTP/UDP/IP headers,
 audio and input; Wi-Fi or no wired link leaves it uncapped with a note. If the

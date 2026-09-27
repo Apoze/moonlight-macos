@@ -73,8 +73,10 @@ inline double pyroWaveQualityDb(int width, int height, int fps, bool chroma444, 
     return PYROWAVE_REGRESSION_MAX_PSNR_HVS_M_H;
 }
 
-// The author's good-quality bitrate in kbps, including his HDR10 allowance.
+// The author's good-quality bitrate in kbps, including his HDR10 allowance,
+// rounded up to the slider's 5 Mbps step for both defaults and calibration.
 inline int pyroWaveRecommendedKbps(int width, int height, int fps, bool chroma444, bool hdr)
 {
-    return int(pyroWaveKbpsForQuality(width, height, fps, chroma444, hdr, kPyroWaveGoodQualityDb));
+    const int kbps = int(pyroWaveKbpsForQuality(width, height, fps, chroma444, hdr, kPyroWaveGoodQualityDb));
+    return int(std::ceil(kbps / 5000.0)) * 5000;
 }
