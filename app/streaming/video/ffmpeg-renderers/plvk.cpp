@@ -1476,6 +1476,29 @@ void PlVkRenderer::gpuRenderInfo(void* opaque, const pl_render_info* info)
 
 uint64_t PlVkRenderer::waitForDecode(AVFrame* frame)
 {
+#if defined(HAVE_PYROWAVE) && defined(Q_OS_LINUX)
+    if (frame != nullptr && m_PyroWavePool && m_PyroWavePool->ownsFrame(frame)) {
+        // These AVFrames use planar software format descriptors, but their
+        // pixels are still being decoded on Vulkan. Establish completion
+        // before the worker maps source time and learns decode/flip overlap.
+        const uint64_t startUs = LiGetMicroseconds();
+        const VkResult status = m_PyroWavePool->waitForFrame(
+            frame, kVulkanGpuReadyTimeoutUs * 1000);
+        const uint64_t endUs = LiGetMicroseconds();
+        if (m_GpuTrace) m_GpuTrace->record({"pyrowave_decode_sync", frame->pts,
+            uint64_t(frame->pkt_dts), startUs, endUs, 0, status});
+        if (status != VK_SUCCESS) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "PyroWave GPU decode completion wait failed: %d", int(status));
+            m_VrrFallbackReason = VrrFallbackReason::AdaptivePresentationUnavailable;
+            queueRenderDeviceReset();
+            // Failed waits are not completion observations. checkSupport()
+            // rejects this frame before it can be prepared or presented.
+            return 0;
+        }
+        return endUs >= startUs ? endUs - startUs : 0;
+    }
+#endif
 #ifdef HAVE_LIBVA
     if (frame == nullptr || frame->format != AV_PIX_FMT_VAAPI ||
             frame->hw_frames_ctx == nullptr) {

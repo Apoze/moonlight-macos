@@ -142,6 +142,18 @@ public:
     static constexpr size_t kMinimumSamples = 32;
     static constexpr size_t kPercentilePerMille = 950;
 
+    void observeGpuCompletion(uint64_t startUs, uint64_t decoderOutputUs,
+                              uint64_t completionUs, bool decoderOutputComplete = false)
+    {
+        // An async decoder's output is submission, not completion. If the
+        // worker found the image already ready, it has no new completion
+        // timestamp: preserve observed history instead of learning CPU cost.
+        if (completionUs > decoderOutputUs ||
+                (decoderOutputComplete && completionUs == decoderOutputUs)) {
+            observe(startUs, completionUs);
+        }
+    }
+
     void observe(uint64_t reassembledUs, uint64_t decodeCompleteUs)
     {
         if (reassembledUs == 0 || decodeCompleteUs < reassembledUs) {

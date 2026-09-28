@@ -198,9 +198,10 @@ VrrTimingParameters vrrTimingParametersForSession(
     // over the qualified window. Include decoder waits and raw preparation
     // even when readiness-lead learning excludes them from generic render cost.
     parameters.playoutSerialServiceGate = parameters.playoutResponsiveBuffer ? 2 : 0;
-    // Keep the preset's long quality history for reporting and future attack,
-    // while only absorbable readiness misses renew the standing-delay hold.
-    parameters.playoutRecentPressureRelease = parameters.playoutResponsiveBuffer ? 2 : 0;
+    // Keep the preset's long quality history for reporting and future attack.
+    // Only absorbable readiness misses renew the hold; revision 3 preserves
+    // qualified clean recovery across short frame or phase breaks.
+    parameters.playoutRecentPressureRelease = parameters.playoutResponsiveBuffer ? 3 : 0;
     // Qualify initial learning sooner with enough observations, without
     // increasing attack speed or rearming fast calibration on FPS changes.
     parameters.playoutIntervalInitialWarmupUs = 500000;
@@ -311,6 +312,11 @@ VrrTimingParameters vrrTimingParametersForSession(
     parameters.renderStartMinimumLeadUs = kRenderStartMinimumLeadUs;
     parameters.renderLeadFloorUs = kRenderLeadFloorUs;
     parameters.rateCandidateMinimumUs = kRateCandidateMinimumUs;
+    // A provisional source rate is cancelled only by an interval near the
+    // old fitted period. The captured 2:1 default treats the 16.7 ms half of
+    // a 16.7/33.3 ms pattern as a return to 120 FPS and never accepts 40 FPS.
+    parameters.candidateCadenceRatioNumerator = 5;
+    parameters.candidateCadenceRatioDenominator = 4;
     parameters.playoutStallBurstExclusion = 1;
     parameters.latchedFloorDisabled = 1;
     // A latched present flips no earlier than one display period after the

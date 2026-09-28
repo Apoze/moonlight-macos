@@ -225,17 +225,22 @@ Our client decodes a record-framed frame that lost packets. moonlight-common-c
 first repairs what parity can (the critical packets). It does not drop a PyroWave
 frame whose FEC block cannot complete: once the next block or frame starts
 arriving, each missing data packet is replaced by zeros and delivered as a
-`BUFFER_TYPE_LOST` buffer. A final block without parity can also complete after
-1 ms of packet silence, without waiting for the next frame. When the client
+`BUFFER_TYPE_LOST` buffer. Once its final data packet has arrived, a final block
+without parity can also complete after 1 ms of packet silence, without waiting
+for the next frame. The final packet is identified by its sequence position in
+the announced data-packet count; an EOF flag on an earlier packet is insufficient. When the client
 reports that the frame's VRR slot is nearer than that
 (`LiSetVideoReassemblyDeadlineCallback()`), the silence shrinks to the slot, but
 never below 250 us after the last unique packet. This requires a
 record-start flag, the short frame header's nonzero critical packet count, and
 all packets in that critical prefix to be present. Unique arrivals renew the
 deadline, including reordered packets; duplicates do not. The receiver drains
-queued socket data before expiring the deadline. Missing EOF is handled by the
-same silence deadline. Optional detail arriving later is discarded, trading a
-bounded reorder allowance for prompt partial-frame delivery. Parity-bearing
+queued socket data before expiring the deadline. If the final data packet is
+absent, no silence deadline is armed: the frame waits for its remaining data or
+the next frame boundary. This prevents host batch/pacing gaps from becoming
+artificial loss. A genuinely lost tail may therefore delay partial delivery
+until the next frame. Interior detail arriving after expiry is discarded,
+trading a bounded reorder allowance for prompt partial-frame delivery. Parity-bearing
 blocks and unknown or incomplete critical prefixes retain boundary-based
 recovery. The frame is still dropped when its first packet
 (sequence header) or a whole FEC block is missing, which parity on the critical

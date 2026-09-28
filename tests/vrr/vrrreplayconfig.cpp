@@ -487,8 +487,8 @@ bool validateVrrTimingParameters(const VrrTimingParameters& value,
     }
     if (value.playoutSourceMappingDecoderOutput > 1 ||
             value.playoutSerialServiceGate > 2 ||
-            value.playoutRecentPressureRelease > 2) {
-        return fail("source mapping flag must be 0 or 1; recent pressure and serial service revisions must be 0..2");
+            value.playoutRecentPressureRelease > 3) {
+        return fail("source mapping flag must be 0 or 1; serial service revision must be 0..2 and recent pressure revision 0..3");
     }
     if ((value.playoutSerialServiceGate || value.playoutRecentPressureRelease) &&
             value.playoutResponsiveBuffer < 6) {

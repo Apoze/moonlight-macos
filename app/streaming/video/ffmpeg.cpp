@@ -1453,10 +1453,10 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
                 reason = recovery;
                 break;
             case Action::Release:
-                reason = "Shrinking - timing has stayed within the target";
+                reason = "Shrinking - clean playback has earned gradual recovery";
                 break;
             case Action::Minimum:
-                reason = "Minimum - timing is within the target";
+                reason = "Minimum - buffer is at its configured floor";
                 break;
             case Action::NotAbsorbable:
                 reason = "Holding - waiting for a stable workload before adjusting";
@@ -2804,6 +2804,12 @@ void FFmpegVideoDecoder::decoderThreadProc()
                                                        reassembledUs,
                                                        decodeSubmitUs);
                         pacedFrame.setDecodeHoldUs(decodeHoldUs);
+#if defined(HAVE_PYROWAVE) && defined(Q_OS_LINUX)
+                        if (m_PyroWaveActive) {
+                            pacedFrame.setDecoderOutputComplete(
+                                !m_PyroWave->hasAsynchronousOutput());
+                        }
+#endif
                         const auto handoffBeginUs = gpuTrace ? LiGetMicroseconds() : 0;
                         m_Pacer->submitFrame(std::move(pacedFrame));
                         if (gpuTrace) gpuTrace->record({"decoder_handoff", rtpTimestamp,

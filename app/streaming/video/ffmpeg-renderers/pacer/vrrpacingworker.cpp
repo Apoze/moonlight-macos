@@ -489,6 +489,9 @@ int VrrPacingWorker::run()
         const bool metronome =
             m_TimingController->parameters().playoutMetronomeEnabled != 0;
         const bool latencyFix = m_TimingController->latencyFixActive();
+        const uint64_t protectedDelayUs =
+            m_TimingController->parameters().playoutRecentPressureRelease >= 3 ?
+                decision.playoutDelayUs : 0;
         // Clock mapping and latency reporting retain the full elapsed age.
         // Discard policy excludes only this image's explicit decode wait:
         // replacing a now-ready image with an unverified successor can repeat
@@ -506,7 +509,8 @@ int VrrPacingWorker::run()
         // here can freeze video indefinitely under sustained GPU load. Keep
         // queue admission/expiry bounded, but present the active ready image.
         if (!preparedAhead && hasQueuedFrame() && VrrFrameDropPolicy::beforeRender(
-                decision, m_TimingController->displayPeriodUs(), ageUs, metronome, latencyFix)) {
+                decision, m_TimingController->displayPeriodUs(), ageUs, metronome,
+                latencyFix, protectedDelayUs)) {
             recordFrameCompletion(queuedFrame, decision, VrrPresentFeedback {}, telemetry,
                        TraceDisposition::Stale);
             noteDrop();
@@ -564,7 +568,7 @@ int VrrPacingWorker::run()
         uint64_t nowUs = LiGetMicroseconds();
         if (!preparedAhead && hasQueuedFrame() && VrrFrameDropPolicy::afterRenderWait(
                 decision, ageOriginUs, nowUs, metronome, latencyFix,
-                decodeSyncWaitUs)) {
+                decodeSyncWaitUs, protectedDelayUs)) {
             recordFrameCompletion(queuedFrame, decision, VrrPresentFeedback {}, telemetry,
                        TraceDisposition::Stale);
             noteDrop();
@@ -978,12 +982,16 @@ bool VrrPacingWorker::dequeueFrame(QueuedFrame& frame,
     }
 
     const uint64_t nowUs = LiGetMicroseconds();
+    const uint64_t protectedDelayUs =
+        m_TimingController->parameters().playoutRecentPressureRelease >= 3 ?
+            m_TimingController->playoutDelayUs() : 0;
     while (m_FrameQueue.size() > 1 && !m_RebaseOnNextFrame &&
             VrrFrameDropPolicy::beforeDecodeWait(
                 m_FrameQueue[0].frame, m_FrameQueue[1].frame,
                 m_FrameQueue[0].trace.arrivalUs, nowUs,
                 m_TimingController->sourcePeriodUs(),
-                m_TimingController->parameters().playoutMetronomeEnabled != 0)) {
+                m_TimingController->parameters().playoutMetronomeEnabled != 0,
+                protectedDelayUs)) {
         expiredFrames.push_back(std::move(m_FrameQueue.front()));
         m_FrameQueue.pop_front();
     }
@@ -1233,9 +1241,13 @@ void VrrPacingWorker::publishReceiveDeadline(const PacedFrame& frame,
     const uint64_t decodeStartUs = frame.reassembledUs() + frame.decodeHoldUs();
     if (frame.reassembledUs() && frame.decodeCompleteUs() >= decodeStartUs &&
             frame.decodeCompleteUs() - decodeStartUs <= decision.sourcePeriodUs) {
-        m_RecentDuration.observe(decodeStartUs, frame.decodeCompleteUs());
+        m_RecentDuration.observeGpuCompletion(
+            decodeStartUs, frame.decoderOutputUs(), frame.decodeCompleteUs(),
+            frame.decoderOutputComplete());
     }
-    m_DecodeGpuCost.observe(frame.decodeSubmitUs(), frame.decodeCompleteUs());
+    m_DecodeGpuCost.observeGpuCompletion(
+        frame.decodeSubmitUs(), frame.decoderOutputUs(), frame.decodeCompleteUs(),
+        frame.decoderOutputComplete());
     if (m_DecodeGpuCost.ready() && m_PresentCallCost.ready()) {
         // A decode submitted from here on would still be running when this
         // frame is presented. The window closes when the Present call returns;
