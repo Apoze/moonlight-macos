@@ -16,6 +16,10 @@
 
 namespace {
 
+#ifndef _WIN32
+constexpr unsigned kFrameContexts = 4;
+#endif
+
 class DecodePhaseTimer {
 public:
     explicit DecodePhaseTimer(PyroWaveDecoder::DecodeDiagnostics* diagnostics)
@@ -379,6 +383,14 @@ bool PyroWaveDecoder::initialize(const Config& config, IPyroWaveSurfacePool* poo
                          "PyroWave: no usable Vulkan decode device: %s", resultString(result));
             return false;
         }
+    }
+    // With two frame contexts, a decode blocks this thread until the GPU has
+    // finished the decode submitted two frames earlier. A brief GPU hiccup
+    // then ages queued frames past the stale limit and they are skipped. More
+    // contexts queue the work instead; the pacer sees late frames and decides.
+    if (pyrowave_device_set_frame_contexts(impl->device, kFrameContexts) != PYROWAVE_SUCCESS) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "PyroWave: keeping the default frame context count");
     }
 #endif
 
