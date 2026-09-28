@@ -702,6 +702,55 @@ helpers and their deterministic tests remain available for development.
 Production retains its Immediate/WSI FIFO selection; adaptive presentation
 permission is owned by the VRR backend rather than a user preference.
 
+### Cached starting delay (2026-09-27)
+
+A session now starts at the playout delay that the last session with the same
+calibration key settled at, instead of the generic start of 0.95 of a source
+period clamped to the display period. The key covers host context, stream
+format, display, rates, frame smoothing and latency mode.
+- **Recording:** `VrrPacingWorker::noteSettledDelay()` samples the decision's
+  playout delay once per second after the first 30 s.
+- **Saving:** on stop, a session with at least 60 samples saves their median to
+  `vrr-start-delay.json`, beside the calibration cache. `Vrr13::saveStartDelay()`
+  keeps 16 entries with a 14-day expiry.
+- **Seeding:** `VrrPacingWorker::start()` loads it into
+  `playout_delay_start_seed_us` through
+  `VrrTimingController::seedPlayoutDelayStart()`. `playoutDelayStartUs()` then
+  returns the seed clamped to the policy minimum and maximum.
+- **Replay:** the seed is a recorded parameter, and session-policy replay
+  copies it from the capture, so replay starts where the live session did.
+  Captures without it are unchanged.
+- **Limits:** the seed sets the start only; growth, holds and release behave as
+  before. A session whose early arrivals are steadier than its later ones
+  still starts above its early need.
+
+### Decode-hold bound and deferred Vulkan acquisition (2026-09-27)
+
+The PyroWave decode hold is now bounded by `g_HoldAnchor`.
+- `VrrPacingWorker::publishReceiveDeadline()` publishes it as the frame's
+  target minus the recent p95 reassembly-to-decode duration, the p95 worker
+  preparation (`m_PreparationCost`, which includes the output-completion wait)
+  and 250 us.
+- The reassembly deadline, `g_Anchor`, still omits preparation and only governs
+  partial-frame release.
+- Previously, a hold ended at the reassembly deadline. In capture
+  20260927-215902, 289 held frames were late: every one finished decoding
+  before its target, but its 5.8 ms median preparation did not fit afterwards.
+  Half the interval-buffer growth events came from such frames.
+
+Linux Mailbox VRR always uses deferred swapchain acquisition:
+  - `PlVkRenderer::prepareFrame()` renders into one of two renderer-owned
+    textures, using the last swapchain frame's parameters.
+  - `presentAdaptive()` acquires the swapchain image, blits the texture into it
+    and submits.
+  - No swapchain image is held across the target wait, but each frame pays one
+    full-screen blit, and the present call now includes acquisition.
+  - A size, format or window-state mismatch falls back to direct acquisition.
+
+Live 4K 4:4:4 Deck sessions halved Present-to-flip (3.9 to 2.0 ms median at
+Low Latency, 1.4 ms at Balanced) with no throughput loss. The Present call rose
+from 0.15 to 0.32 ms median. Gamescope (Immediate/FIFO) and D3D11 are unchanged.
+
 ### Source-epoch buffer restore and startup render sample (2026-09-27)
 
 Three session-policy controls were added. Captured traces without them replay

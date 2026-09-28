@@ -2699,6 +2699,21 @@ void testReceiveDeadlineMath()
            "a decode outside the window must go at once");
     expect(D::decodeHold(0, roomy, 10, nowUs).window == 0,
            "no published window means no hold");
+
+    // The hold budget must leave room for preparation, not only decode:
+    // a roomy reassembly deadline does not authorize a hold.
+    D::publishPresentWindow(nowUs - 500, nowUs + 1500);
+    D::publish(10, nowUs + 8000);
+    D::publishHold(10, nowUs + 1000);
+    expect(D::decodeHold(10, nowUs).window == 0,
+           "a hold must use the decode-and-preparation bound, not the reassembly deadline");
+    D::publishHold(10, nowUs + 8000);
+    expect(D::decodeHold(10, nowUs).window != 0,
+           "a hold within the decode-and-preparation bound is allowed");
+    D::clear();
+    expect(D::decodeHold(10, nowUs).window == 0,
+           "clearing the deadlines also clears the hold bound");
+    D::clearPresentWindow();
 }
 
 int main()

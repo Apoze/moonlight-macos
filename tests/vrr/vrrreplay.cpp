@@ -11776,6 +11776,9 @@ int main(int argc, char* argv[])
                 }
                 scenario.controller = vrrTimingParametersForSession(
                     simulatedConfig);
+                // The start seed came from this machine's cache, not policy.
+                scenario.controller.playoutDelayStartSeedUs =
+                    capturedParameters.playoutDelayStartSeedUs;
                 if (scenario.controllerFromSession &&
                         !scenario.controllerOverrides.isEmpty()) {
                     QString overrideError;

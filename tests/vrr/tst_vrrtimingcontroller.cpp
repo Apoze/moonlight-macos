@@ -5780,6 +5780,23 @@ void testInitialPreparationIsNotTypicalRender()
            "renderer setup in the first preparation must not become typical render cost");
 }
 
+void testStartDelaySeedReplacesGenericStart()
+{
+    auto session = config(120, 120);
+    const auto parameters = vrrTimingParametersForSession(session);
+    const auto startOf = [&](uint64_t seedUs) {
+        VrrTimingController controller(session, true, parameters);
+        controller.seedPlayoutDelayStart(seedUs);
+        const auto decoded = decodedTimeForRtp(1000000, 750);
+        return controller.schedule(frame(0, 750, true, decoded), decoded).playoutDelayUs;
+    };
+    const auto generic = startOf(0);
+    expect(startOf(3000) == 3000 && generic != 3000,
+           "a cached settled delay must replace the generic starting guess");
+    expect(startOf(1) == parameters.playoutDelayMinimumUs,
+           "a cached delay must stay within the policy minimum");
+}
+
 void testIntervalBufferRestoreHoldsRestoredTarget()
 {
     Vrr13::IntervalBuffer buffer;
@@ -6251,6 +6268,7 @@ int main()
     testAlternatingSlowCadenceLeavesFastRate();
     testInitialPreparationIsNotTypicalRender();
     testIntervalBufferRestoreHoldsRestoredTarget();
+    testStartDelaySeedReplacesGenericStart();
     testIntervalBufferAboveTargetDipDoesNotEraseRecovery();
     testIntervalQualityUsesPresetHistory();
     testPresetIntervalTolerances();

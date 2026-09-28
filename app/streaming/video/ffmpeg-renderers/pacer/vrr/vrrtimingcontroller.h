@@ -217,6 +217,7 @@
     X(uint64_t, loose_headroom_display_periods, looseHeadroomDisplayPeriods, 2) \
     X(uint64_t, base_guard_divisor, baseGuardDivisor, 96) \
     X(uint64_t, preparation_initial_sample_excluded, preparationInitialSampleExcluded, 0) \
+    X(uint64_t, playout_delay_start_seed_us, playoutDelayStartSeedUs, 0) \
     X(uint64_t, playout_epoch_rate_ratio_per_mille, playoutEpochRateRatioPerMille, 0) \
     X(uint64_t, playout_epoch_sustain_us, playoutEpochSustainUs, 0) \
     X(uint64_t, playout_delay_decrease_slew_us, playoutDelayDecreaseSlewUs, 0) \
@@ -421,6 +422,11 @@ public:
     const Vrr13::Reserve& playoutHistory() const { return m_PlayoutHistory; }
     bool loadPlayoutHistory(const std::vector<int64_t>& profile) {
         return !m_HaveTimeline && m_PlayoutHistory.loadProfile(profile);
+    }
+    // Start at the delay a previous session with the same calibration key
+    // settled at. Recorded as a parameter so replay reproduces the start.
+    void seedPlayoutDelayStart(uint64_t delayUs) {
+        if (!m_HaveTimeline) m_Parameters.playoutDelayStartSeedUs = delayUs;
     }
     uint64_t playoutQueueLimitUs() const;
     bool latencyFixActive() const { return m_LatencyFixActive; }

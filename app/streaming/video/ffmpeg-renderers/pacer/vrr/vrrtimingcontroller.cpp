@@ -3076,6 +3076,10 @@ uint64_t VrrTimingController::playoutQueueLimitUs() const
 
 uint64_t VrrTimingController::playoutDelayStartUs() const
 {
+    if (m_Parameters.playoutDelayStartSeedUs != 0) {
+        return clampUnsigned(m_Parameters.playoutDelayStartSeedUs,
+                             playoutDelayMinimumUs(), playoutDelayMaximumUs());
+    }
     uint64_t startUs = m_Parameters.playoutDelayStartUs != 0 ?
         m_Parameters.playoutDelayStartUs : m_Parameters.sourcePlayoutDelayUs;
     if (m_Parameters.playoutDelayStartPeriodPerMille != 0) {

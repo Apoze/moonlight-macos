@@ -215,6 +215,15 @@ VrrPacingWorker::~VrrPacingWorker()
         Vrr13::saveProfile(QString::fromStdString(m_Config.calibrationPath),
                           QString::fromStdString(m_Config.calibrationKey),
                           m_TimingController->playoutHistory());
+        // A median over the settled part of the session, not the final value,
+        // which may still carry a transient.
+        if (m_SettledDelaySamples.size() >= kMinimumSettledDelaySamples) {
+            auto samples = m_SettledDelaySamples;
+            std::nth_element(samples.begin(), samples.begin() + samples.size() / 2, samples.end());
+            Vrr13::saveStartDelay(startDelayPath(),
+                                  QString::fromStdString(m_Config.calibrationKey),
+                                  samples[samples.size() / 2]);
+        }
     }
 }
 
@@ -231,15 +240,19 @@ bool VrrPacingWorker::start()
                               QString::fromStdString(m_Config.calibrationKey), prior)) {
             m_CalibrationLoaded = m_TimingController->loadPlayoutHistory(prior.profile());
         }
+        m_StartDelaySeedUs = Vrr13::loadStartDelay(startDelayPath(),
+            QString::fromStdString(m_Config.calibrationKey));
+        m_TimingController->seedPlayoutDelayStart(m_StartDelaySeedUs);
     }
     m_InitialPlayoutProfile = encodeVrrPlayoutProfile(m_TimingController->playoutHistory());
     m_InitialCachedSamples = m_TimingController->playoutHistory().cachedEvidence();
     m_HistoryVersion = m_TimingController->playoutHistory().version();
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "VRR capture policy: latency_mode=%d readiness_hitch_feedback=%d history_version=%d calibration_loaded=%d cached_samples=%llu",
+                "VRR capture policy: latency_mode=%d readiness_hitch_feedback=%d history_version=%d calibration_loaded=%d cached_samples=%llu start_delay_seed_us=%llu",
                 m_Config.latencyMode, int(m_Config.readinessHitchFeedback),
                 m_HistoryVersion, int(m_CalibrationLoaded),
-                static_cast<unsigned long long>(m_InitialCachedSamples));
+                static_cast<unsigned long long>(m_InitialCachedSamples),
+                static_cast<unsigned long long>(m_StartDelaySeedUs));
 
     // Enable capture before the producer can submit its first frame. Opening
     // from run() left a small startup race that made session replay incomplete.
@@ -460,6 +473,7 @@ int VrrPacingWorker::run()
         VrrTimingDecision decision = m_TimingController->schedule(
             frame, decisionTimeUs);
         publishReceiveDeadline(frame, decision);
+        noteSettledDelay(decisionTimeUs, decision.playoutDelayUs);
         FrameTelemetry telemetry;
         telemetry.preparedAhead = preparedAhead;
         if (preparedAhead) telemetry.preparationStage = queuedFrame.preparation->timing;
@@ -609,6 +623,7 @@ int VrrPacingWorker::run()
         uint64_t gpuReadyWaitUs = gpuReadyCompleted ?
             preparation.feedback.gpuReadyTimeUs -
                 preparation.feedback.gpuReadyWaitStartUs : 0;
+        m_PreparationCost.observe(telemetry.preparationStartUs, telemetry.preparationEndUs);
         m_TimingController->notePreparationDuration(
             telemetry.preparationDurationUs,
             preparation.timingValid ? preparation.acquireUs : 0,
@@ -1218,6 +1233,26 @@ void VrrPacingWorker::noteDrop()
     }
 }
 
+QString VrrPacingWorker::startDelayPath() const
+{
+    return QFileInfo(QString::fromStdString(m_Config.calibrationPath)).absolutePath() +
+        QStringLiteral("/vrr-start-delay.json");
+}
+
+void VrrPacingWorker::noteSettledDelay(uint64_t nowUs, uint64_t delayUs)
+{
+    // Sample once per second after the first half minute: early delay still
+    // reflects the starting value rather than what this setup needs.
+    if (!m_FirstDecisionUs) m_FirstDecisionUs = nowUs;
+    if (nowUs - m_FirstDecisionUs < kSettledDelayWarmupUs ||
+            (m_LastSettledDelaySampleUs && nowUs - m_LastSettledDelaySampleUs < 1000000) ||
+            m_SettledDelaySamples.size() >= 36000) {
+        return;
+    }
+    m_LastSettledDelaySampleUs = nowUs;
+    m_SettledDelaySamples.push_back(delayUs);
+}
+
 void VrrPacingWorker::publishReceiveDeadline(const PacedFrame& frame,
                                              const VrrTimingDecision& decision)
 {
@@ -1256,6 +1291,13 @@ void VrrPacingWorker::publishReceiveDeadline(const PacedFrame& frame,
     }
     if (!m_RecentDuration.ready()) {
         return;
+    }
+    if (m_PreparationCost.ready()) {
+        const uint64_t holdLeadUs = m_RecentDuration.percentileUs() +
+            m_PreparationCost.percentileUs() + kReceiveDeadlineMarginUs;
+        if (decision.targetUs > holdLeadUs) {
+            VrrReceiveDeadline::publishHold(frame.rtpTimestamp(), decision.targetUs - holdLeadUs);
+        }
     }
     const uint64_t onTimeUs = decision.sourceTimeUs + decision.playoutDelayUs;
     const uint64_t leadUs = m_RecentDuration.percentileUs() + kReceiveDeadlineMarginUs;
