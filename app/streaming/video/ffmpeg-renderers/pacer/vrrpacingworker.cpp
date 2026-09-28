@@ -489,9 +489,8 @@ int VrrPacingWorker::run()
         const bool metronome =
             m_TimingController->parameters().playoutMetronomeEnabled != 0;
         const bool latencyFix = m_TimingController->latencyFixActive();
-        const uint64_t protectedDelayUs =
-            m_TimingController->parameters().playoutRecentPressureRelease >= 3 ?
-                decision.playoutDelayUs : 0;
+        // The playout delay is intentional queue residence, not staleness.
+        const uint64_t protectedDelayUs = decision.playoutDelayUs;
         // Clock mapping and latency reporting retain the full elapsed age.
         // Discard policy excludes only this image's explicit decode wait:
         // replacing a now-ready image with an unverified successor can repeat
@@ -982,9 +981,7 @@ bool VrrPacingWorker::dequeueFrame(QueuedFrame& frame,
     }
 
     const uint64_t nowUs = LiGetMicroseconds();
-    const uint64_t protectedDelayUs =
-        m_TimingController->parameters().playoutRecentPressureRelease >= 3 ?
-            m_TimingController->playoutDelayUs() : 0;
+    const uint64_t protectedDelayUs = m_TimingController->playoutDelayUs();
     while (m_FrameQueue.size() > 1 && !m_RebaseOnNextFrame &&
             VrrFrameDropPolicy::beforeDecodeWait(
                 m_FrameQueue[0].frame, m_FrameQueue[1].frame,

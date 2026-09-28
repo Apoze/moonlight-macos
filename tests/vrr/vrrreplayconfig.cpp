@@ -745,6 +745,8 @@ bool loadVrrReplayConfiguration(const QByteArray& json,
         configuration.commonControllerCustomized =
             parameterObject.value("controller").isObject() &&
             !parameterObject.value("controller").toObject().isEmpty();
+        configuration.commonControllerOverrides =
+            parameterObject.value("controller").toObject();
     }
     const QJsonValue scenariosValue = root.value("scenarios");
     if (!scenariosValue.isArray() || scenariosValue.toArray().isEmpty()) {
@@ -756,7 +758,7 @@ bool loadVrrReplayConfiguration(const QByteArray& json,
         if (!item.isObject()) { error = "each scenario must be an object"; return false; }
         const QJsonObject object = item.toObject();
         for (auto it = object.constBegin(); it != object.constEnd(); ++it) {
-            if (it.key() != "name" && it.key() != "mode" &&
+            if (it.key() != "name" && it.key() != "mode" && it.key() != "base" &&
                     it.key() != "parameters" && it.key() != "assertions") {
                 error = "unknown scenario key: " + it.key(); return false;
             }
@@ -768,8 +770,14 @@ bool loadVrrReplayConfiguration(const QByteArray& json,
         scenario.worker = configuration.commonWorker;
         scenario.display = configuration.commonDisplay;
         scenario.execution = configuration.commonExecution;
+        scenario.controllerOverrides = configuration.commonControllerOverrides;
         scenario.name = object.value("name").toString();
         scenario.mode = object.value("mode").toString("fixed");
+        const QString base = object.value("base").toString("generic");
+        if (base != "generic" && base != "session") {
+            error = "scenario base must be generic or session"; return false;
+        }
+        scenario.controllerFromSession = base == "session";
         if (scenario.name.isEmpty() || names.contains(scenario.name)) {
             error = "scenario names must be non-empty and unique"; return false;
         }
@@ -789,6 +797,12 @@ bool loadVrrReplayConfiguration(const QByteArray& json,
                 scenario.controllerCustomized ||
                 (parameterObject.value("controller").isObject() &&
                  !parameterObject.value("controller").toObject().isEmpty());
+            const QJsonObject controllerObject =
+                parameterObject.value("controller").toObject();
+            for (auto it = controllerObject.constBegin();
+                    it != controllerObject.constEnd(); ++it) {
+                scenario.controllerOverrides.insert(it.key(), it.value());
+            }
         }
         if (object.contains("assertions")) {
             if (!object.value("assertions").isArray()) {
@@ -848,6 +862,13 @@ bool applyVrrReplayOverride(const QString& expression,
     QJsonObject section;
     section[path.section('.', 1, 1)] = static_cast<double>(number);
     if (path.startsWith("controller.")) {
+        if (scenario.controllerFromSession) {
+            // Validated as one snapshot on top of the session policy later.
+            scenario.controllerOverrides.insert(section.constBegin().key(),
+                                                section.constBegin().value());
+            scenario.controllerCustomized = true;
+            return true;
+        }
         if (!applyControllerObject(section, scenario.controller, error)) {
             return false;
         }

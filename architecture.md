@@ -702,6 +702,46 @@ helpers and their deterministic tests remain available for development.
 Production retains its Immediate/WSI FIFO selection; adaptive presentation
 permission is owned by the VRR backend rather than a user preference.
 
+### Source-epoch buffer restore and startup render sample (2026-09-27)
+
+Three session-policy controls were added. Captured traces without them replay
+unchanged.
+
+- `playout_epoch_rate_ratio_per_mille` (1500), `playout_epoch_confirm_us`
+  (1 s) and `playout_epoch_sustain_us` (10 s) apply to the interval buffer:
+  - When the fitted source rate departs from the current epoch's rate by at
+    least 1.5x and holds for the confirmation time,
+    `noteIntervalBufferEpoch()` records the outgoing demand. It does this only
+    if that epoch lasted the sustain time, keyed by quarter-octave rate bucket.
+  - On entering a bucket, or its neighbour, with a lower recorded demand, it
+    restores that value through `IntervalBuffer::restoreTarget()`. The restored
+    target is then protected for one hold.
+  - Restores only lower the target; an unfamiliar rate keeps current protection.
+  - This removes delay bought during a slow scene, which Smooth's
+    50 us-per-second release would otherwise carry for minutes after the source
+    returned to its earlier rate.
+- `playout_delay_decrease_slew_us` (250) limits each applied decrease to
+  250 us per frame.
+- `preparation_initial_sample_excluded` (1) keeps the first preparation after a
+  controller start or phase rebase out of `m_PreparationDurations`. That
+  preparation includes one-time renderer setup (0.4 s on the Deck at 4K). As the
+  only sample, it set `typicalRenderUs()` to its 100 ms clamp and delayed the
+  following targets.
+
+The stale-drop horizon, `max(2 periods, playout delay + 1 period)`, now protects
+the playout delay in every session rather than only under release revision 3.
+
+Replay controller overrides now accept `"base": "session"` per scenario, or
+`--session-base` on the command line. The overrides are layered on the session
+policy resolved for the capture. Without a base, overrides still start from
+historical defaults.
+
+Exploratory replay of the 15-capture corpus, which cannot model frame shedding:
+- The 2026-09-27 30 fps scene capture's decode-to-submission p95 went from
+  23.8 to 19.0 ms, with presented jerk over 2 ms +1 per mille.
+- Two Balanced 2026-09-26 captures gained 0.3-0.7 ms p50 at +3 to +4 per mille.
+- The remaining captures were unchanged.
+
 ### Reduce judder readiness reserve and wider retiming (2026-09-22)
 
 Written on the Sunshine host (Ambidex), which has no client toolchain, traces or

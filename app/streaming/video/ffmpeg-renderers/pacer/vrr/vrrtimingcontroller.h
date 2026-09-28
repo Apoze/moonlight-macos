@@ -215,7 +215,12 @@
     X(uint64_t, usable_headroom_numerator, usableHeadroomNumerator, 3) \
     X(uint64_t, usable_headroom_denominator, usableHeadroomDenominator, 4) \
     X(uint64_t, loose_headroom_display_periods, looseHeadroomDisplayPeriods, 2) \
-    X(uint64_t, base_guard_divisor, baseGuardDivisor, 96)
+    X(uint64_t, base_guard_divisor, baseGuardDivisor, 96) \
+    X(uint64_t, preparation_initial_sample_excluded, preparationInitialSampleExcluded, 0) \
+    X(uint64_t, playout_epoch_rate_ratio_per_mille, playoutEpochRateRatioPerMille, 0) \
+    X(uint64_t, playout_epoch_sustain_us, playoutEpochSustainUs, 0) \
+    X(uint64_t, playout_delay_decrease_slew_us, playoutDelayDecreaseSlewUs, 0) \
+    X(uint64_t, playout_epoch_confirm_us, playoutEpochConfirmUs, 0)
 
 // Every value that changes VRR policy remains replaceable by replay without
 // rebuilding the controller. Production callers use these defaults.
@@ -533,6 +538,7 @@ private:
     uint64_t playoutDelayMinimumUs() const;
     void noteReadinessFloorSample(uint64_t submissionUs, int64_t readyOffsetUs);
     uint64_t playoutDelayMaximumUs() const;
+    void noteIntervalBufferEpoch(uint64_t atUs);
     void updatePlayoutHistory(const PacedFrame& frame,
                               const CadenceObservation& cadence,
                               bool rebased, int64_t requiredUs);
@@ -655,6 +661,13 @@ private:
     Vrr13::ReadinessFeedback m_ReadinessFeedback;
     Vrr13::MeanMissBuffer m_MeanMissBuffer;
     Vrr13::IntervalBuffer m_IntervalBuffer;
+    // Interval-buffer demand remembered per source-rate epoch, keyed by
+    // quarter-octave rate bucket.
+    std::vector<std::pair<int, uint64_t>> m_EpochDemands;
+    uint64_t m_EpochRateMilliHz = 0;
+    uint64_t m_EpochSinceUs = 0;
+    uint64_t m_EpochCandidateMilliHz = 0;
+    uint64_t m_EpochCandidateSinceUs = 0;
     Vrr13::PresentationPrediction m_PresentationPrediction;
     Vrr13::SmoothnessFeedback m_SubmissionSmoothness, m_NativeSmoothness;
     // Lifetime counters for decoder-owned reporting windows. These do not
@@ -733,6 +746,7 @@ private:
     uint64_t m_ReadinessFloorUs = 0;
     uint64_t m_ReadinessFloorUpdatedUs = 0;
     std::deque<uint64_t> m_PreparationDurations;
+    bool m_PreparationInitialSampleSeen = false;
     std::deque<uint64_t> m_RenderSchedulerDelays;
     std::deque<uint64_t> m_TargetSchedulerDelays;
 

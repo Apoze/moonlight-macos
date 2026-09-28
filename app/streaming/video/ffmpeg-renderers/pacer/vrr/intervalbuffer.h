@@ -304,6 +304,14 @@ public:
         update.requestedUs = m_Target;
     }
     uint64_t demand(uint64_t applied) const { return m_Initialized ? m_Target : applied; }
+    // Replace the standing target at a source epoch and protect it for one
+    // hold from the given time, as if pressure had just been observed.
+    void restoreTarget(uint64_t target, uint64_t atUs) {
+        if (!m_Initialized) return;
+        m_Target = target;
+        m_LastPressure = atUs;
+        m_ReleaseFraction = 0;
+    }
     Stats stats() const { return m_Stats; }
     void breakSequence() {
         m_Window = {}; m_First = m_ReleaseFraction = m_SequenceSamples = 0; m_HavePrevious = false;

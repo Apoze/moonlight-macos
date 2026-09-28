@@ -5757,6 +5757,52 @@ void testAlternatingSlowCadenceLeavesFastRate()
            "one long source interval followed by normal cadence must remain provisional");
 }
 
+void testInitialPreparationIsNotTypicalRender()
+{
+    const auto run = [](uint64_t excluded) {
+        auto session = config(120, 120);
+        auto parameters = vrrTimingParametersForSession(session);
+        parameters.preparationInitialSampleExcluded = excluded;
+        VrrTimingController controller(session, true, parameters);
+        uint32_t ticks = 0;
+        for (int i = 0; i < 1; ++i) {
+            ticks += 750;
+            const auto decoded = decodedTimeForRtp(1000000, ticks);
+            const auto decision = controller.schedule(frame(i, ticks, true, decoded), decoded);
+            controller.notePreparationDuration(400000);
+            controller.noteSubmission(true, false, decision.targetUs);
+        }
+        return controller.typicalRenderUs();
+    };
+    expect(run(0) == 100000,
+           "recorded policy retains renderer setup as a clamped render sample");
+    expect(run(1) <= 10000,
+           "renderer setup in the first preparation must not become typical render cost");
+}
+
+void testIntervalBufferRestoreHoldsRestoredTarget()
+{
+    Vrr13::IntervalBuffer buffer;
+    uint64_t atUs = 1000000;
+    uint64_t frameNumber = 0;
+    const auto clean = [&](int count) {
+        for (int i = 0; i < count; ++i) {
+            ++frameNumber;
+            atUs += 10000;
+            buffer.observe({frameNumber, atUs, atUs, atUs, atUs, 3000, true, true},
+                           1000, 24000, 6000000, 1000, true, 990000,
+                           500, 30000000, 500000, 32, 3, 2, true);
+        }
+    };
+    clean(10);
+    buffer.restoreTarget(12000, atUs);
+    expect(buffer.demand(0) == 12000, "an epoch restore replaces the standing target");
+    clean(500);
+    expect(buffer.demand(0) == 12000, "a restored target is protected for one hold");
+    clean(700);
+    expect(buffer.demand(0) < 12000, "a restored target releases after its hold");
+}
+
 void testIntervalBufferAboveTargetDipDoesNotEraseRecovery()
 {
     Vrr13::IntervalBuffer buffer;
@@ -6203,6 +6249,8 @@ int main()
     testIntervalQualityBuffer();
     testIntervalBufferReleaseAcrossShortGaps();
     testAlternatingSlowCadenceLeavesFastRate();
+    testInitialPreparationIsNotTypicalRender();
+    testIntervalBufferRestoreHoldsRestoredTarget();
     testIntervalBufferAboveTargetDipDoesNotEraseRecovery();
     testIntervalQualityUsesPresetHistory();
     testPresetIntervalTolerances();
