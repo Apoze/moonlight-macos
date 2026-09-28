@@ -16,9 +16,7 @@
 
 namespace {
 
-#ifndef _WIN32
 constexpr unsigned kFrameContexts = 4;
-#endif
 
 class DecodePhaseTimer {
 public:
@@ -384,6 +382,7 @@ bool PyroWaveDecoder::initialize(const Config& config, IPyroWaveSurfacePool* poo
             return false;
         }
     }
+#endif
     // With two frame contexts, a decode blocks this thread until the GPU has
     // finished the decode submitted two frames earlier. A brief GPU hiccup
     // then ages queued frames past the stale limit and they are skipped. More
@@ -392,7 +391,6 @@ bool PyroWaveDecoder::initialize(const Config& config, IPyroWaveSurfacePool* poo
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "PyroWave: keeping the default frame context count");
     }
-#endif
 
     pyrowave_decoder_create_info decoderInfo = {};
     decoderInfo.device = impl->device;

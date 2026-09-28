@@ -702,6 +702,20 @@ helpers and their deterministic tests remain available for development.
 Production retains its Immediate/WSI FIFO selection; adaptive presentation
 permission is owned by the VRR backend rather than a user preference.
 
+### Windows PyroWave parity (2026-09-28)
+
+Windows D3D11 PyroWave frames, whose Vulkan decode signals a shared fence and
+returns at submission, are now marked `decoderOutputComplete=false` like Linux
+shared-surface frames.
+- Decode-cost learning (`observeGpuCompletion`) therefore uses only waits that
+  `waitForPyroWaveDecode()` actually observed, never the CPU submission time.
+- The decode-hold bound and the reassembly deadline depend on that learned cost.
+- Both platforms keep four PyroWave frame contexts in flight.
+
+Deferred swapchain acquisition stays Linux-only. The flip coupling it removes
+comes from a RADV Mailbox image held across the target wait; DXGI flip-model
+presentation has no equivalent acquired image.
+
 ### Cached starting delay (2026-09-27)
 
 A session now starts at the playout delay that the last session with the same

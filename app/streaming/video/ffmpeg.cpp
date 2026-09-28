@@ -2807,7 +2807,9 @@ void FFmpegVideoDecoder::decoderThreadProc()
                                                        reassembledUs,
                                                        decodeSubmitUs);
                         pacedFrame.setDecodeHoldUs(decodeHoldUs);
-#if defined(HAVE_PYROWAVE) && defined(Q_OS_LINUX)
+#ifdef HAVE_PYROWAVE
+                        // Shared-surface output (Linux Vulkan, Windows D3D11
+                        // interop) returns at submission, not completion.
                         if (m_PyroWaveActive) {
                             pacedFrame.setDecoderOutputComplete(
                                 !m_PyroWave->hasAsynchronousOutput());
