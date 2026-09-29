@@ -207,6 +207,9 @@ private:
     HWND m_VrrWindowHandle;
     VrrDisplayTimingSnapshot m_VrrDisplayTiming;
     bool m_VrrRasterSamplingRequested;
+    // MOONLIGHT_VRR_TEARING=1 restores per-frame tearing presents; otherwise
+    // every VRR flip is synchronized (see presentAdaptive).
+    bool m_VrrTearingFlips = false;
     // Flip protection's raster wait; disabled for the session if the raster
     // never reports a vertical blank (see presentAdaptive).
     bool m_VrrRasterGuardDisabled = false;

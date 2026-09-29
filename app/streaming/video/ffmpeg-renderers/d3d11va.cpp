@@ -2122,6 +2122,11 @@ void D3D11VARenderer::initializeVrrPresentationState(SDL_Window* window,
         rasterSamplingEnv != nullptr &&
         rasterSamplingEnv[0] == '1' &&
         rasterSamplingEnv[1] == '\0';
+    const char* tearingEnv = SDL_getenv("MOONLIGHT_VRR_TEARING");
+    m_VrrTearingFlips = tearingEnv != nullptr &&
+        tearingEnv[0] == '1' && tearingEnv[1] == '\0';
+    m_VrrRasterGuardDisabled = false;
+    m_VrrRasterGuardTimeouts = 0;
     SDL_SysWMinfo windowInfo;
     SDL_VERSION(&windowInfo.version);
     if (window != nullptr &&
@@ -3042,8 +3047,20 @@ VrrPresentFeedback D3D11VARenderer::presentAdaptive(
     // where a latched present would have flipped anyway, without depending on
     // how a given driver implements sync-interval presents. Latch only if the
     // blank does not arrive within two display periods.
+    //
+    // Unless MOONLIGHT_VRR_TEARING=1, skip all of that and synchronize every
+    // flip, as Linux's Mailbox/FIFO presentation does. Tearing presents in a
+    // mostly latched stream cost frames on screen: in 116/120 captures from
+    // 2026-09-28, DXGI showed one present sharing a refresh with the next (a
+    // frame never displayed) or a repeated refresh after 24-66% of tearing
+    // presents, versus 1.4% between latched ones. Report it as a protection
+    // latch so the controller anchors the flip queue, without a reference time.
     bool latchedPresentation = request.latchedPresentation;
-    if (!latchedPresentation && request.flipProtectionWindowUs != 0 &&
+    if (!latchedPresentation && !m_VrrTearingFlips) {
+        latchedPresentation = true;
+        feedback.flipProtectionLatched = true;
+    }
+    else if (!latchedPresentation && request.flipProtectionWindowUs != 0 &&
             m_VrrPriorPresentCountValid) {
         feedback.flipProtectionChecked = true;
         feedback.flipProtectionQueryStartUs = LiGetMicroseconds();
