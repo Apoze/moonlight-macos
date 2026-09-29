@@ -331,16 +331,16 @@ int NetworkBuffers::routedWiredLinkMbps(const QHostAddress& host)
     route.connectToHost(host, 9);
     if (!route.waitForConnected(200)) return 0;
     const QHostAddress source = route.localAddress();
-    for (const auto& interface : QNetworkInterface::allInterfaces()) {
-        if (!(interface.flags() & QNetworkInterface::IsUp) ||
-            (interface.flags() & QNetworkInterface::IsLoopBack)) continue;
+    for (const auto& netInterface : QNetworkInterface::allInterfaces()) {
+        if (!(netInterface.flags() & QNetworkInterface::IsUp) ||
+            (netInterface.flags() & QNetworkInterface::IsLoopBack)) continue;
         bool ownsSource = false;
-        for (const auto& entry : interface.addressEntries()) {
+        for (const auto& entry : netInterface.addressEntries()) {
             if (entry.ip() == source) { ownsSource = true; break; }
         }
         if (!ownsSource) continue;
 #ifdef Q_OS_LINUX
-        const QString path = QStringLiteral("/sys/class/net/") + interface.name();
+        const QString path = QStringLiteral("/sys/class/net/") + netInterface.name();
         if (!QFile::exists(path + QStringLiteral("/device")) ||
             QFile::exists(path + QStringLiteral("/wireless")) ||
             QFile::exists(path + QStringLiteral("/phy80211"))) return 0;
@@ -365,7 +365,7 @@ int NetworkBuffers::routedWiredLinkMbps(const QHostAddress& host)
         if (result != NO_ERROR) return 0;
         for (auto adapter = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data()); adapter; adapter = adapter->Next) {
             if (adapter->OperStatus == IfOperStatusUp && adapter->IfType == IF_TYPE_ETHERNET_CSMACD &&
-                (adapter->IfIndex == ULONG(interface.index()) || adapter->Ipv6IfIndex == ULONG(interface.index()))) {
+                (adapter->IfIndex == ULONG(netInterface.index()) || adapter->Ipv6IfIndex == ULONG(netInterface.index()))) {
                 return int(adapter->ReceiveLinkSpeed / 1'000'000);
             }
         }

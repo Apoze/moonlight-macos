@@ -429,8 +429,8 @@ double percentile(std::vector<double> values, double share)
 {
     if (values.empty()) return 0;
     std::sort(values.begin(), values.end());
-    const size_t index = std::min(values.size() - 1,
-                                  size_t(std::ceil(double(values.size()) * share)) - 1);
+    const size_t index = (std::min)(values.size() - 1,
+                                    size_t(std::ceil(double(values.size()) * share)) - 1);
     return values[index];
 }
 
@@ -491,7 +491,7 @@ public:
         }
         const double periodMs = 1000.0 / m_Fps;
         std::vector<double> serviceMs;
-        if (!run(std::max(24, m_Fps / 2), serviceMs)) {
+        if (!run((std::max)(24, m_Fps / 2), serviceMs)) {
             probe.error = runError();
             return probe;
         }
@@ -506,7 +506,7 @@ public:
         if (probe.overloaded || quick) {
             return probe;
         }
-        if (!run(std::max(kMinimumTimedFrames, m_Fps * kTimedSeconds), serviceMs)) {
+        if (!run((std::max)(kMinimumTimedFrames, m_Fps * kTimedSeconds), serviceMs)) {
             probe.ok = false;
             probe.error = runError();
             return probe;
@@ -943,7 +943,7 @@ void PyroWaveCalibrator::start(ComputerManager* manager, const QString& hostUuid
             http.probePyroWaveDownloadMbps();
             for (int i = 0; i < 3 && !cancelled->load(); ++i) {
                 const int sampleMbps = http.probePyroWaveDownloadMbps();
-                measuredMbps = measuredMbps == 0 ? sampleMbps : std::min(measuredMbps, sampleMbps);
+                measuredMbps = measuredMbps == 0 ? sampleMbps : (std::min)(measuredMbps, sampleMbps);
             }
             if (!cancelled->load() && measuredMbps <= 0) {
                 throw std::runtime_error("PyroWave bandwidth probe returned no usable speed");
@@ -968,8 +968,8 @@ void PyroWaveCalibrator::start(ComputerManager* manager, const QString& hostUuid
             return;
         }
         int availableMbps = measuredMbps;
-        if (hostLinkMbps > 0) availableMbps = std::min(availableMbps, hostLinkMbps);
-        if (linkMbps > 0) availableMbps = std::min(availableMbps, linkMbps);
+        if (hostLinkMbps > 0) availableMbps = (std::min)(availableMbps, hostLinkMbps);
+        if (linkMbps > 0) availableMbps = (std::min)(availableMbps, linkMbps);
         const int linkCapKbps = roundDownKbps(availableMbps * 1000.0 * kLinkShare);
         if (linkCapKbps < 5000) {
             QMetaObject::invokeMethod(this, [this] {
