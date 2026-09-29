@@ -36,6 +36,22 @@ different frame framing; see "Compatibility".
 The host ORs these bits into `ServerCodecModeSupport` when PyroWave encoding works
 on the capture adapter:
 
+For a paired HTTPS `/serverinfo` request, a capable host also returns
+`PyroWaveHostLinkMbps` (zero if its outbound route is not a known physical wired
+link) and `PyroWaveBandwidthProbeBytes=33554432`. The link number is the host's
+local transmit speed, not measured end-to-end throughput. Linux and Windows
+resolve the route to the requesting client; Linux ignores virtual, wireless,
+half-duplex and inactive interfaces. The host refreshes its streaming pace from
+that route every two seconds.
+
+The paired client can GET `/pyrowave-bandwidth-probe` over its pinned HTTPS
+connection. It receives exactly 32 MiB of fixed binary payload
+to time. The client discards a warm-up and uses the slowest of three measurements,
+then reserves 20% for protocol overhead and contention. The result is a bulk
+host-to-client throughput estimate. It does not prove that live UDP bursts will
+avoid packet loss, so calibration remains a recommendation rather than a stream
+quality guarantee.
+
 | Bit | Value | Meaning |
 |---|---|---|
 | `SCM_PYROWAVE` | `0x00800000` | 8-bit 4:2:0 |

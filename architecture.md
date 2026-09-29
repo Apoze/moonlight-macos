@@ -307,10 +307,18 @@ stall can land in any run.
 The default bitrate and calibration's author recommendation use the same
 35 dB calculation rounded up to 5 Mbps, including the HDR allowance. The
 default no longer applies a separate 900 Mbps cap and needs no calibration.
-Calibration starts from that recommendation, capped at 80% of the fastest connected wired link
-(`NetworkBuffers::wiredLinkMbps()`: sysfs speed, or `GetAdaptersAddresses`
-receive speed), leaving room for record padding, FEC, RTP/UDP/IP headers,
-audio and input; Wi-Fi or no wired link leaves it uncapped with a note. If the
+Calibration now requires a selected online, paired PyroWave host. Before the GPU
+sweep, the client downloads four 32 MiB probes from that host over pinned HTTPS.
+It discards the warm-up and uses the slowest of the other three as its bulk
+host-to-client throughput estimate. The bitrate is capped at 80% of the
+smallest known value among that measurement, the host's routed physical wired
+transmit speed from `/serverinfo`, and this PC's wired receive speed from
+`NetworkBuffers::wiredLinkMbps()`. The reserve covers record padding, FEC,
+RTP/UDP/IP headers, audio, input, and contention. The table grades 4K 4:4:4
+at the selected FPS against that cap; bulk HTTPS throughput cannot prove that
+live UDP bursts will be loss-free. If the host lacks the probe API or the
+transfer fails, calibration reports the error instead of presenting an
+uncapped recommendation. If the
 top bitrate misses, a quick run at the regression floor (30 dB) checks whether
 a lower bitrate cuts the mean GPU time per frame by at least 10%. If not, the
 format is "Can't keep up" at the top bitrate, which it applies if selected: a
