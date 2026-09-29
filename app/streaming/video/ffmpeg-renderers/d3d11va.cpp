@@ -2122,9 +2122,9 @@ void D3D11VARenderer::initializeVrrPresentationState(SDL_Window* window,
         rasterSamplingEnv != nullptr &&
         rasterSamplingEnv[0] == '1' &&
         rasterSamplingEnv[1] == '\0';
-    const char* tearingEnv = SDL_getenv("MOONLIGHT_VRR_TEARING");
-    m_VrrTearingFlips = tearingEnv != nullptr &&
-        tearingEnv[0] == '1' && tearingEnv[1] == '\0';
+    const char* syncFlipsEnv = SDL_getenv("MOONLIGHT_VRR_SYNC_FLIPS");
+    m_VrrSyncFlips = syncFlipsEnv != nullptr &&
+        syncFlipsEnv[0] == '1' && syncFlipsEnv[1] == '\0';
     m_VrrRasterGuardDisabled = false;
     m_VrrRasterGuardTimeouts = 0;
     SDL_SysWMinfo windowInfo;
@@ -3048,15 +3048,14 @@ VrrPresentFeedback D3D11VARenderer::presentAdaptive(
     // how a given driver implements sync-interval presents. Latch only if the
     // blank does not arrive within two display periods.
     //
-    // Unless MOONLIGHT_VRR_TEARING=1, skip all of that and synchronize every
-    // flip, as Linux's Mailbox/FIFO presentation does. Tearing presents in a
-    // mostly latched stream cost frames on screen: in 116/120 captures from
-    // 2026-09-28, DXGI showed one present sharing a refresh with the next (a
-    // frame never displayed) or a repeated refresh after 24-66% of tearing
-    // presents, versus 1.4% between latched ones. Report it as a protection
-    // latch so the controller anchors the flip queue, without a reference time.
+    // MOONLIGHT_VRR_SYNC_FLIPS=1 skips all of that and synchronizes every flip,
+    // as Linux's Mailbox/FIFO presentation does, reporting it as a protection
+    // latch so the controller anchors the flip queue. It is opt-in: on the
+    // 890M, all-synchronized sessions sometimes took a slow flip path (Present
+    // to screen p50 6-10 ms instead of ~1 ms), blocking Present calls and
+    // juddering far worse than the occasional tear it avoided.
     bool latchedPresentation = request.latchedPresentation;
-    if (!latchedPresentation && !m_VrrTearingFlips) {
+    if (!latchedPresentation && m_VrrSyncFlips) {
         latchedPresentation = true;
         feedback.flipProtectionLatched = true;
     }

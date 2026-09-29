@@ -497,24 +497,29 @@ them, and the slowness was measured on one driver. A general version would
 first measure latched flip lateness per machine (DXGI's latched flip times are
 reliable) and switch only where latching is slow.
 
-Synchronized DXGI flips (2026-09-28): D3D11 now presents every VRR frame with
-`Present(1, 0)`, as Linux's Mailbox/FIFO presentation never tears.
-`MOONLIGHT_VRR_TEARING=1` restores the per-frame tearing path, including the
-flip protection below. The controller still plans latched and adaptive slots.
+Synchronized DXGI flips (2026-09-28, opt-in): `MOONLIGHT_VRR_SYNC_FLIPS=1`
+makes D3D11 present every VRR frame with `Present(1, 0)`, as Linux's
+Mailbox/FIFO presentation never tears. It was briefly the default and was
+reverted to opt-in the same day. Three later 4K 4:4:4 Plague Tale sessions
+(`20260929-002816-302`, `-003251-756`, `-003353-351`) had these median
+Present-to-screen times: 6.4 ms, 9.8 ms and 1.1 ms. In the two slow ones,
+blocked Present calls pushed submission jerk above 2 ms to 363-487 per mille
+and on-screen jerk to 101-325. One of them had 1,130 consecutive-frame pairs
+four refreshes apart, consistent with a slower composited flip path. Without
+the variable, the per-frame tearing path and flip protection below apply.
+The controller still plans latched and adaptive slots.
 An adaptive slot the presenter synchronizes is reported as
 `flip_protection_latched` with no reference time, so the controller anchors it
 as a latch and replay applies it as recorded evidence. Replay's DXGI argument
-contract and exact baseline therefore hold unchanged. The evidence came from
-DXGI refresh counts (`latch_sync_refresh_seq` per `latch_submission_id`) in
-captures `20260928-225055-539` (4K) and `20260928-230651-821` (1440p116, clean
-host). Every present that shared a refresh with its predecessor, a frame never
-displayed, followed a tearing present, 24-49% of the time. A tearing present
-followed by a guard-latched one repeated a refresh on 66% of pairs. Latched
-pairs glitched on 1.4%. Tearing slots were 7-19% of frames. In the 1440p
-session, submission-time jerk above 2 ms was 32 per mille but 72 on screen.
-The raster guard also now resets per swap chain, instead of staying disabled
-after three timeouts during the fullscreen transition. Latency cost of the
-latched flips (see the 890M composed-flip note below) needs a live capture.
+contract and exact baseline therefore hold unchanged. The motivating evidence
+was DXGI refresh counts (`latch_sync_refresh_seq` per `latch_submission_id`)
+in captures `20260928-225055-539` and `20260928-230651-821`. There, every
+present that shared a refresh with its predecessor followed a tearing present.
+That evidence is weak: DXGI credits a tearing flip to an earlier refresh
+(recorded tearing flip times had a median 8 ms before the Present call), so
+some of those shared refreshes may be accounting rather than lost frames. The
+raster guard now resets per swap chain, instead of staying disabled for the
+session after three timeouts during the fullscreen transition.
 
 Raster flip guard (2026-09-26): after the decode hold, PresentMon on
 `Moonlight-sandbox-20260926-140622-380` (4K Balanced) showed on-screen jerk
@@ -2450,10 +2455,9 @@ each target is compared with `lastSubmission + displayPeriod + guard`.
 This restores vrr14's planned-slot protection rule, without vrr17's extra
 225/400 us entry/exit allowance. If it falls earlier and the presenter supports native protection, that slot is latched
 and its software floor is disabled. Otherwise the adaptive floor applies.
-DXGI uses `Present(1, 0)` for protected slots. Since 2026-09-28 it also
-synchronizes the slots that clear that threshold and reports them as
-protection latches; only `MOONLIGHT_VRR_TEARING=1` restores
-`Present(0, DXGI_PRESENT_ALLOW_TEARING)` for them. Diagnostic composition already
+DXGI uses `Present(1, 0)` for protected slots and
+`Present(0, DXGI_PRESENT_ALLOW_TEARING)` for slots that clear that threshold;
+`MOONLIGHT_VRR_SYNC_FLIPS=1` synchronizes those too (see 2026-09-28 above). Diagnostic composition already
 provides native ordering; its protection capability likewise permits a slot
 without the extra CPU floor. It does not expose DXGI tearing flags.
 
