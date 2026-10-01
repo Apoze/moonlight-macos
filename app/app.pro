@@ -537,6 +537,7 @@ linux:contains(QT_ARCH, x86_64):!disable-pyrowave:contains(CONFIG, libplacebo) {
     CONFIG += pyrowave
 }
 pyrowave {
+    include($$PWD/../pyrowave/compression/compression.pri)
     DEFINES += HAVE_PYROWAVE
 
     SOURCES += \

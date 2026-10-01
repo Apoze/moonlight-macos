@@ -4,6 +4,12 @@ CONFIG += ordered
 framing.file = $$PWD/framing.pro
 SUBDIRS += framing
 
+compression.file = $$PWD/compression.pro
+SUBDIRS += compression
+
+sdp.file = $$PWD/sdp.pro
+SUBDIRS += sdp
+
 # The round trip compiles the vendored codec and needs a Vulkan GPU at runtime
 win32:contains(QT_ARCH, x86_64) {
     roundtrip.file = $$PWD/roundtrip.pro

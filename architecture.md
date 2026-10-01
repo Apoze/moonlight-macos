@@ -39,6 +39,42 @@ the `PyroWave` codec choice negotiates Themaister's intra-only wavelet codec
 partial frame can render with missing detail as blur; a rejected frame is dropped
 without an IDR request because the next frame is independent.
 
+PyroWave independent compression (2026-09-30, reviewed over `1ad5848b` plus
+this worktree): Settings > Video codec > PyroWave exposes PyroWave compression.
+Both endpoints advertise/negotiate compression version 1 and feature `0x8`;
+unsupported hosts use ordinary transport with a launch warning. The abandoned
+Hybrid preference migrates to the new setting, but its `0x4` feature, frame-reference
+wire format and ACK control path are removed.
+
+The host still encodes a complete intra frame, preserves its raw coarse-data prefix,
+and packs detail into independent groups of at most 64 KiB using fast LZ4. A 4 KiB
+sample avoids full passes on high-entropy groups. Incompressible groups use native
+records; if repacking erases the gain, the original framed bytes are sent unchanged.
+Compression failures also send the native frame, including native framing's
+unpadded fallback at the transport ceiling where there is no protected prefix.
+No temporal comparison, XOR residual, reference cache, frame identity or ACK remains.
+Deterministic sign/alignment padding stays because it improves compression entropy.
+
+A compressed group has a 16-byte size/CRC32C header, begins on an RTP shard
+boundary, and expands to native detail records before GPU submission. The framing
+parser owns reusable expanded storage; each span identifies the original wire or
+that storage. It validates geometry, sequence, detail-only records, exact LZ4 output
+size and CRC before the ordinary clear-per-frame GPU decode. Packet loss skips only
+affected groups, with record-start flags allowing recovery after a lost header.
+An intact coarse prefix still displays a partial frame; one lost shard can remove
+up to 64 KiB of detail. Intact output preserves every native coefficient exactly.
+Critical FEC is unchanged; optional detail FEC observes native records before
+compression and protects the resulting wire shards.
+
+The 2026-09-30 frozen session delivered 1,884 partial frames and rejected 1,867 in
+the old Hybrid path, producing zero rendering FPS. An active receive-side 1 Gbps
+IFB test on the Deck's 2.5 Gbps NIC had cumulative drops; this is packet-delivery
+loss and exposes Hybrid's whole-frame requirement. The replacement's regression
+covers sustained detail loss and subsequent complete restoration. Neither those
+tests nor a modeled wire benchmark establish live streaming smoothness.
+The shared contract is in `pyrowave/compression/README.md` and
+[docs/pyrowave-protocol.md](docs/pyrowave-protocol.md).
+
 PyroWave partial-frame delivery (2026-09-26, `afd4aebb` plus the receive fix):
 the RTP queue previously held an incomplete final block until the next frame
 arrived. In capture `20260926-061208`, all 66 buffer increases in the first
@@ -267,7 +303,8 @@ add three events to the independent GPU CSV, without changing replay or pacing.
 `pyrowave_phases` uses `a..e` for CPU wall microseconds spent parsing,
 pushing/validating packets, acquiring/allocating output, submitting decode (or
 synchronous readback), and releasing/referencing output. Its object field is
-decode success; failed calls retain the phase in which they failed. These
+decode success; failed calls retain the phase in which they failed. With compression
+the parsing phase also includes CPU group validation/decompression. These
 durations include any resource-reuse waits and are not GPU execution times.
 `pyrowave_context_wait.a` isolates the CPU wall time inside Granite's
 `next_frame_context()` from the larger submit phase. This advances one of two
@@ -275,7 +312,9 @@ codec frame contexts and can wait for previously submitted GPU work; the
 timing is zero on non-shared/readback paths.
 `pyrowave_payload` records framed bytes in object, and surviving payload bytes,
 received block records, announced blocks, stripped padding bytes and partial
-status in `a..e`. At teardown, a decoder that recorded phase diagnostics logs
+status in `a..e`. With compression object is the received wire size, while
+payload/blocks describe surviving native records after group expansion. At teardown, a decoder
+that recorded phase diagnostics logs
 the codec's existing GPU history, including Dequant and iDWT durations per codec
 frame context, before imported-image teardown advances extra contexts. Those
 are aggregated delayed GPU query results, not per-frame completion timestamps.

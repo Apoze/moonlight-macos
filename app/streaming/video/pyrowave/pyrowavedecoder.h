@@ -24,6 +24,8 @@ public:
         int height = 0;
         bool chroma444 = false;
         bool tenBit = false;
+        // Negotiated with a host that supports independent LZ4 detail groups.
+        bool compression = false;
 #ifndef _WIN32
         // Optional; without it frames are read back into system memory
         IPyroWaveVulkanPool* vulkanPool = nullptr;
@@ -59,7 +61,8 @@ public:
     // packets maps the frame's RTP packets and which of them were lost (empty
     // for a frame that arrived whole); what survived is decoded when the
     // coarsest wavelet level did, which the host announces as the first
-    // criticalPackets packets (0 if it did not).
+    // criticalPackets packets (0 if it did not). Compressed detail groups
+    // are independent; unrepaired detail loss remains a partial frame.
     bool decode(const uint8_t* data, size_t size,
                 const std::vector<PyroWaveFraming::Segment>& packets, size_t criticalPackets,
                 AVFrame* frame, DecodeDiagnostics* diagnostics = nullptr);

@@ -98,6 +98,42 @@ void fillTestImage(Planes& planes, int frameIndex)
     }
 }
 
+// Flat luma under chroma that flips sign every sample, Cb along x and Cr along
+// y. Averaging any 2x2 quad, as 4:2:0 subsampling does, leaves both planes flat.
+void fillChromaDetailImage(Planes& planes)
+{
+    std::fill(planes.y.begin(), planes.y.end(), uint8_t(128));
+    for (int yy = 0; yy < planes.chromaHeight(); yy++) {
+        for (int xx = 0; xx < planes.chromaWidth(); xx++) {
+            const size_t index = size_t(yy) * planes.chromaWidth() + xx;
+            planes.cb[index] = uint8_t(128 + ((xx & 1) ? 48 : -48));
+            planes.cr[index] = uint8_t(128 + ((yy & 1) ? 48 : -48));
+        }
+    }
+}
+
+// What a plane becomes when each 2x2 quad is replaced by its mean
+std::vector<uint8_t> quadAverage(const std::vector<uint8_t>& plane, int width, int height)
+{
+    std::vector<uint8_t> out(plane.size());
+    for (int yy = 0; yy < height; yy += 2) {
+        for (int xx = 0; xx < width; xx += 2) {
+            int sum = 0;
+            for (int dy = 0; dy < 2; dy++) {
+                for (int dx = 0; dx < 2; dx++) {
+                    sum += plane[size_t(yy + dy) * width + xx + dx];
+                }
+            }
+            for (int dy = 0; dy < 2; dy++) {
+                for (int dx = 0; dx < 2; dx++) {
+                    out[size_t(yy + dy) * width + xx + dx] = uint8_t((sum + 2) / 4);
+                }
+            }
+        }
+    }
+    return out;
+}
+
 double psnr(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b)
 {
     double sum = 0;
@@ -698,9 +734,95 @@ void runCase(pyrowave_device device, int width, int height, bool chroma444, size
     pyrowave_encoder_destroy(encoder);
 }
 
+// A 4:4:4 stream must carry chroma that changes every sample. The other cases
+// use slowly varying chroma, which an upsampled 4:2:0 stream would also match.
+void runChromaDetailCase(pyrowave_device device, int width, int height, size_t budget)
+{
+    const std::string name = std::to_string(width) + "x" + std::to_string(height) + " 4:4:4 chroma detail";
+    const PyroWaveFraming::StreamGeometry geometry {width, height, true};
+
+    pyrowave_encoder_create_info encoderInfo = {};
+    encoderInfo.device = device;
+    encoderInfo.width = width;
+    encoderInfo.height = height;
+    encoderInfo.chroma = PYROWAVE_CHROMA_SUBSAMPLING_444;
+    pyrowave_encoder encoder = nullptr;
+    if (pyrowave_encoder_create(&encoderInfo, &encoder) != PYROWAVE_SUCCESS) {
+        expect(false, name + ": encoder creation");
+        return;
+    }
+
+    pyrowave_decoder_create_info decoderInfo = {};
+    decoderInfo.device = device;
+    decoderInfo.width = width;
+    decoderInfo.height = height;
+    decoderInfo.chroma = encoderInfo.chroma;
+    pyrowave_decoder decoder = nullptr;
+    if (pyrowave_decoder_create(&decoderInfo, &decoder) != PYROWAVE_SUCCESS) {
+        expect(false, name + ": decoder creation");
+        pyrowave_encoder_destroy(encoder);
+        return;
+    }
+
+    Planes source, decoded;
+    source.allocate(width, height, true);
+    decoded.allocate(width, height, true);
+    fillChromaDetailImage(source);
+
+    const double subsampledCb = psnr(source.cb, quadAverage(source.cb, width, height));
+    const double subsampledCr = psnr(source.cr, quadAverage(source.cr, width, height));
+    expect(subsampledCb < 20.0 && subsampledCr < 20.0,
+           name + ": pattern is beyond what 4:2:0 subsampling keeps (Cb " +
+           std::to_string(subsampledCb) + " dB, Cr " + std::to_string(subsampledCr) + " dB)");
+
+    const size_t shard = 1392 - 16;
+    auto input = source.buffer();
+    pyrowave_rate_control rate = { budget };
+    if (pyrowave_encoder_encode_cpu_synchronous(encoder, &input, &rate) != PYROWAVE_SUCCESS) {
+        expect(false, name + ": encode");
+    }
+    else {
+        size_t packetCount = 0;
+        pyrowave_encoder_compute_num_packets_with_padding(encoder, shard, 8, &packetCount);
+        std::vector<pyrowave_packet> packets(packetCount);
+        std::vector<uint8_t> bitstream(budget + 1024 * 1024);
+        size_t written = 0;
+        if (pyrowave_encoder_packetize_with_padding(encoder, packets.data(), shard, 8, &written,
+                                                    bitstream.data(), bitstream.size()) != PYROWAVE_SUCCESS) {
+            expect(false, name + ": packetize");
+        }
+        else {
+            packets.resize(written);
+            size_t criticalBytes = 0;
+            const auto records = recordFrame(bitstream, packets, shard,
+                                             PyroWaveFraming::coarseBlockCount(geometry), criticalBytes);
+            if (decodeFramed(decoder, records, geometry, PyroWaveFraming::Framing::Records, decoded, name)) {
+                const double cb = psnr(source.cb, decoded.cb);
+                const double cr = psnr(source.cr, decoded.cr);
+                std::printf("%s: %zu bytes, decoded Cb/Cr PSNR %.1f/%.1f dB (2x2 average would give %.1f/%.1f dB)\n",
+                            name.c_str(), records.size(), cb, cr, subsampledCb, subsampledCr);
+                expect(cb > 30.0, name + ": Cb PSNR " + std::to_string(cb));
+                expect(cr > 30.0, name + ": Cr PSNR " + std::to_string(cr));
+            }
+#ifdef __linux__
+            for (bool tenBit : { false, true }) {
+                checkLinuxClientDecode(records, source, name, tenBit, nullptr);
+                if (g_Shared) {
+                    checkLinuxClientDecode(records, source, name, tenBit, g_Shared);
+                }
+            }
+#endif
+        }
+    }
+
+    pyrowave_decoder_destroy(decoder);
+    pyrowave_encoder_destroy(encoder);
+}
+
 }
 
 bool checkPyroWaveDequantStores();
+bool checkPyroWaveCompressionClientDecode(pyrowave_device device);
 
 int main(int argc, char** argv)
 {
@@ -712,6 +834,11 @@ int main(int argc, char** argv)
 
     if (argc == 2 && std::strcmp(argv[1], "--dequant-only") == 0) {
         const bool passed = checkPyroWaveDequantStores();
+        pyrowave_device_destroy(device);
+        return passed ? 0 : 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--compression-only") == 0) {
+        const bool passed = checkPyroWaveCompressionClientDecode(device);
         pyrowave_device_destroy(device);
         return passed ? 0 : 1;
     }
@@ -728,11 +855,13 @@ int main(int argc, char** argv)
 #endif
 
     expect(checkPyroWaveDequantStores(), "coefficient-store GPU equivalence");
+    expect(checkPyroWaveCompressionClientDecode(device), "compressed client reconstruction and packet-loss recovery");
 
     // Budgets around 1.6 bits per pixel
     runCase(device, 1280, 720, false, 180 * 1024);
     runCase(device, 1920, 1080, false, 400 * 1024);
     runCase(device, 1920, 1080, true, 650 * 1024);
+    runChromaDetailCase(device, 1920, 1080, 650 * 1024);
 
     pyrowave_device_destroy(device);
 

@@ -733,7 +733,23 @@ Flickable {
                     ToolTip.delay: 1000
                     ToolTip.timeout: 8000
                     ToolTip.visible: hovered && slider.pyroWave
-                    ToolTip.text: qsTr("PyroWave is an intra-only GPU wavelet codec. It needs a wired connection with hundreds of Mbps to spare and a host with PyroWave support; other hosts fall back to H.264. On Linux, GPU readback and upload may limit frame rate.")
+                    ToolTip.text: qsTr("PyroWave is a GPU wavelet codec. It needs a wired connection with hundreds of Mbps to spare and a host with PyroWave support; other hosts fall back to H.264. Fast lossless compression can reduce PyroWave bandwidth. On Linux, GPU readback and upload may limit frame rate.")
+                }
+
+                CheckBox {
+                    id: pyroWaveCompression
+                    width: parent.width
+                    visible: SystemProperties.hasPyroWave && slider.pyroWave
+                    text: qsTr("PyroWave compression")
+                    font.pointSize: 12
+
+                    checked: StreamingPreferences.pyroWaveCompression
+                    onCheckedChanged: StreamingPreferences.pyroWaveCompression = checked
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 8000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Apply fast lossless compression to independent detail groups. This can lower bandwidth without adding a frame of buffering; savings depend on the scene. Missing detail can still render as blur. Requires a host with PyroWave compression support; other hosts use normal PyroWave. Reconnect after changing this setting.")
                 }
 
                 CheckBox {

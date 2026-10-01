@@ -1167,6 +1167,14 @@ bool Session::validateLaunch(SDL_Window* testWindow)
             m_SupportedVideoFormats.removeByMask(VIDEO_FORMAT_MASK_PYROWAVE);
         }
         else {
+            if (m_Preferences->pyroWaveCompression) {
+                if (m_Computer->pyrowaveCompressionVersion == PYROWAVE_COMPRESSION_VERSION) {
+                    m_StreamConfig.pyrowaveCompression = 1;
+                }
+                else {
+                    emitLaunchWarning(tr("Your host PC doesn't support this version of PyroWave compression. Using normal PyroWave instead."));
+                }
+            }
             const int hostLinkMbps = int(m_Computer->pyrowaveHostLinkMbps);
             if (hostLinkMbps > 0 && m_StreamConfig.bitrate > hostLinkMbps * 800) {
                 emitLaunchWarning(tr("PyroWave is set to %1 Mbps, but the host's %2 Mbps wired link leaves room for only about %3 Mbps of video. Lower the bitrate or run calibration.")
