@@ -286,6 +286,11 @@ VrrTimingParameters vrrTimingParametersForSession(
     parameters.playoutSmoothingReserveReleaseUsPerSecond =
         kPlayoutSmoothingReserveReleaseUsPerSecond;
     parameters.playoutSmoothingResetSlewUs = kPlayoutSmoothingResetSlewUs;
+    // Reduce judder may spend available readiness slack, but cannot buy a
+    // larger interval buffer by advancing an otherwise on-time deadline.
+    // Zero preserves both the old smoother and its attribution for replay.
+    parameters.playoutSmoothingReadinessBound =
+        parameters.playoutResponsiveBuffer >= 6 && config.smoothFrameTiming ? 1 : 0;
     parameters.playoutSmoothingWindowedCadence = 2;
     // Four consecutive intervals qualify the new window. Source-rate changes
     // already have their own confirmation gate; another 200 ms without
@@ -662,8 +667,13 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
     int64_t readyOffsetUs = 0;
     int64_t smoothingUs = 0;
     uint64_t smoothingReserveUs = 0;
+    int64_t desiredRetimingUs = 0;
+    uint64_t smoothingReadyPushUs = 0;
     uint64_t missedTicks = 0;
     uint64_t delayBeforeUs = 0;
+    const bool readinessBoundedSmoothing = timestampPlayout &&
+        !metronomeEnabled() && m_Parameters.playoutResponsiveBuffer >= 6 &&
+        m_Parameters.playoutSmoothingReadinessBound != 0;
     const uint64_t leadUs = saturatingAdd(m_Parameters.playoutPredictionEnabled ? typicalRenderUs() : m_RenderLeadUs,
                                           m_Parameters.presentationSafetyUs);
     if (timestampPlayout) {
@@ -725,6 +735,18 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
                     std::min(m_Parameters.playoutSmoothingMaxLagUs, smoothingReserveUs)));
                 retimingUs = std::max(retimingUs, -static_cast<int64_t>(
                     saturatingAdd(delayBeforeUs, smoothingReserveUs)));
+            }
+            desiredRetimingUs = retimingUs;
+            if (readinessBoundedSmoothing) {
+                // Decode readiness is already known. Spend only the time left
+                // before the raw slot, retaining its typical render allowance.
+                // A raw-late frame keeps that deadline for real buffer feedback;
+                // it must not advance it even further to satisfy the smoother.
+                const int64_t readyFloorUs = std::min<int64_t>(0,
+                    readyOffsetUs - static_cast<int64_t>(delayBeforeUs));
+                retimingUs = std::max(retimingUs, readyFloorUs -
+                    static_cast<int64_t>(smoothingReserveUs));
+                smoothingReadyPushUs = static_cast<uint64_t>(retimingUs - desiredRetimingUs);
             }
             m_LastSmoothingRetimingUs = retimingUs;
             smoothingUs = retimingUs + static_cast<int64_t>(smoothingReserveUs);
@@ -859,6 +881,8 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
     if (reseedPhase) {
         m_FutureProjectionFrames = 0;
         smoothingUs = 0;
+        desiredRetimingUs = 0;
+        smoothingReadyPushUs = 0;
         m_LastSmoothingRetimingUs = 0;
         missedTicks = 0;
         resetCadenceSmoothing();
@@ -907,8 +931,11 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
         // shifts with the reserve, and would otherwise feed it back into itself.
         const int64_t rawLatenessUs = readyOffsetUs -
             static_cast<int64_t>(playoutDelayUs);
-        const int64_t retimingUs = smoothingUs -
-            static_cast<int64_t>(smoothingReserveUs);
+        // Learn from the requested retiming, before its readiness bound. The
+        // bounded smoothing reserve can then cover future early slots without
+        // asking the independent interval buffer to grow or hold for them.
+        const int64_t retimingUs = readinessBoundedSmoothing ? desiredRetimingUs :
+            smoothingUs - static_cast<int64_t>(smoothingReserveUs);
         observeSmoothingReserve(m_SmoothingEngaged && !reseedPhase,
                                 std::min<int64_t>(rawLatenessUs, 0) - retimingUs,
                                 nowUs);
@@ -1202,11 +1229,12 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
     }
     else if (timestampPlayout &&
             m_Parameters.playoutSmoothingGainPerMille != 0) {
-        // VRR14 smooths the source schedule independently of readiness. Feeding
-        // a late execution time back into that clock carries delay into later
-        // frames instead of letting the available recovery headroom drain it.
-        // Old captures retain VRR13's execution-anchored smoothing.
-        const uint64_t basis = m_Parameters.playoutPredictionEnabled ? originalTargetUs : targetUs;
+        // Keep the source schedule independent of readiness. Feeding a late
+        // execution time or a readiness-bounded slot back into this clock
+        // carries delay into later frames and undoes host-quantized smoothing.
+        // Old captures retain their original/execution-anchored policy.
+        const uint64_t basis = m_Parameters.playoutPredictionEnabled ?
+            originalTargetUs - std::min(originalTargetUs, smoothingReadyPushUs) : targetUs;
         m_LastSmoothedBasisUs = basis > leadUs ? basis - leadUs : 0;
         m_HaveSmoothedBasis = true;
     }
@@ -2150,7 +2178,14 @@ void VrrTimingController::noteSubmission(bool submitted, bool cancelled,
             (work <= p.period && p.decoderQueue <= p.period);
         const auto ready = std::max(m_Pending.deferredGpuReadyUs,
             m_Pending.preparationCompleteUs ? m_Pending.preparationCompleteUs : saturatingAdd(p.decoded, work));
-        const auto deadline = m_Pending.smoothness.intended;
+        // Early retiming has its own bounded reserve. Only readiness beyond
+        // the raw deadline may grow or renew the interval buffer's hold. Keep
+        // a later smoothed deadline when it already covers genuine raw lateness.
+        const uint64_t smoothingAdvanceUs =
+            m_Parameters.playoutSmoothingReadinessBound != 0 &&
+            m_Parameters.playoutResponsiveBuffer >= 6 ? p.smoothingAdvance : 0;
+        const auto deadline = saturatingAdd(m_Pending.smoothness.intended,
+                                             smoothingAdvanceUs);
         if (m_Parameters.playoutResponsiveBuffer >= 6) {
             m_IntervalBuffer.observe({m_Pending.smoothness.frame, m_Pending.intervalIntendedUs,
                 submissionUs, deadline, ready, p.applied,

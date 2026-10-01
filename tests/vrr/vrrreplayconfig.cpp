@@ -543,6 +543,9 @@ bool validateVrrTimingParameters(const VrrTimingParameters& value,
     if (value.playoutSmoothingResetSlewUs > 100000) {
         return fail("playout_smoothing_reset_slew_us must be in 0..100000");
     }
+    if (value.playoutSmoothingReadinessBound > 1) {
+        return fail("playout_smoothing_readiness_bound must be 0 or 1");
+    }
     if (value.playoutQueueFrames > VrrLargestQueuedFrames) {
         return fail("playout_queue_frames must be 0 (historical three) or at most the decoder-backed limit");
     }

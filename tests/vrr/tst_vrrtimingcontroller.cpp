@@ -5101,7 +5101,11 @@ void testWindowedSmoothingResetsOnDiscontinuity()
     for (int mode : {0, 1, 2}) for (int fault : {0, 1, 2, 3, 4}) {
         auto session = config(120, 120);
         session.latencyMode = mode;
-        VrrTimingController controller(session, true, vrrTimingParametersForSession(session));
+        auto policy = vrrTimingParametersForSession(session);
+        // Keep the ordinary cadence fixtures above the readiness floor so
+        // they measure requalification independently of buffer release.
+        policy.playoutMeanMissReleaseUsPerSecond = 0;
+        VrrTimingController controller(session, true, policy);
         uint32_t ticks = 0;
         int number = 0;
         uint64_t last = 0;
@@ -5129,8 +5133,133 @@ void testWindowedSmoothingResetsOnDiscontinuity()
                    "discontinuity recovery must not accumulate latency debt");
             last = submitted;
         }
-        expect(recovered > 180, "windowed cadence must recover after genuine discontinuities");
+        // Losing RTP can leave its restored clock before decode readiness
+        // while the mapper slews back. The negative two thirds of this cadence
+        // must then stay bounded; its positive third still proves recovery.
+        if (fault == 3 && policy.playoutSmoothingReadinessBound != 0) {
+            expect(recovered > 60,
+                   "RTP recovery must retain feasible positive cadence corrections when early slots cannot be ready");
+        }
+        else {
+            expect(recovered > 180, "windowed cadence must recover after genuine discontinuities");
+        }
     }
+}
+
+struct LowRateSmoothingResult {
+    uint64_t growth = 0, smoothingOnlyGrowth = 0, rawMisses = 0;
+    uint64_t releases = 0;
+    uint64_t maximumBufferUs = 0, finalBufferUs = 0;
+    uint64_t jerkOver2ms = 0, pairs = 0;
+};
+
+LowRateSmoothingResult runLowRateSmoothingFixture(int mode, bool bounded,
+                                                 bool smoothing,
+                                                 uint64_t readinessVariationUs,
+                                                 bool release = false)
+{
+    auto session = config(120, 120);
+    session.latencyMode = mode;
+    session.smoothFrameTiming = smoothing;
+    auto policy = vrrTimingParametersForSession(session);
+    policy.playoutSmoothingReadinessBound = bounded && smoothing ? 1 : 0;
+    policy.playoutDelayStartSeedUs = 8000;
+    // Isolate attacks from the preset's independent release rate. All three
+    // profiles begin the slow scene with 8 ms and, in the on-time case, keep
+    // 4 ms of readiness slack before the raw deadline.
+    if (!release) policy.playoutMeanMissReleaseUsPerSecond = 0;
+    VrrTimingController controller(session, true, policy);
+    LowRateSmoothingResult result;
+    uint64_t ticks = 0, last = 0, previousReady = 0, previousRaw = 0;
+    uint64_t previousInterval = 0;
+    for (int i = 0; i < 2580; ++i) {
+        const bool slow = i >= 1200;
+        const bool noisy = i >= 1380;
+        ticks += slow ? 3000 : 750;
+        // Confirm the 120 -> 30 FPS transition and learn the heavier render
+        // cost before introducing alternating 21/45 ms sender intervals.
+        const uint32_t stamp = uint32_t(ticks + (noisy && i % 2 ? 1080 : 0));
+        const uint64_t decoded = decodedTimeForRtp(1000000, stamp) +
+            (noisy && i % 2 ? readinessVariationUs : 0);
+        const uint64_t now = std::max(last, decoded);
+        const auto decision = controller.schedule(frame(i, stamp, true, decoded), now);
+        const uint64_t service = slow ? 9000 : 1000;
+        const uint64_t ready = std::max(now, decision.renderStartUs) + service;
+        const uint64_t submitted = std::max(ready, decision.targetUs);
+        controller.notePreparationDuration(service, 0, ready);
+        controller.noteSchedulerDelays(0, 0, true);
+        controller.noteSubmission(true, false, submitted);
+        const uint64_t rawDeadline = uint64_t(int64_t(decision.originalTargetUs) -
+                                              decision.cadenceSmoothingUs);
+        if (noisy) {
+            result.maximumBufferUs = std::max(result.maximumBufferUs, decision.playoutDelayUs);
+            result.finalBufferUs = decision.playoutDelayUs;
+            result.rawMisses += ready > rawDeadline;
+            const auto update = controller.intervalStats().update;
+            result.releases += update.action == Vrr13::IntervalBuffer::Action::Release;
+            if (update.action == Vrr13::IntervalBuffer::Action::Grow) {
+                ++result.growth;
+                result.smoothingOnlyGrowth += update.attributedFrame == uint64_t(i) ?
+                    ready <= rawDeadline : previousReady <= previousRaw;
+            }
+            if (i >= 1500) {
+                const uint64_t interval = submitted - last;
+                if (previousInterval) {
+                    ++result.pairs;
+                    result.jerkOver2ms += std::max(interval, previousInterval) -
+                        std::min(interval, previousInterval) > 2000;
+                }
+                previousInterval = interval;
+            }
+        }
+        previousReady = ready;
+        previousRaw = rawDeadline;
+        last = submitted;
+    }
+    return result;
+}
+
+void testLowRateSmoothingPreservesReadinessSlack()
+{
+    for (int mode : {0, 1, 2}) {
+        const auto previous = runLowRateSmoothingFixture(mode, false, true, 4000);
+        const auto current = runLowRateSmoothingFixture(mode, true, true, 4000);
+        const auto unsmoothed = runLowRateSmoothingFixture(mode, true, false, 4000);
+        expect(current.rawMisses == 0 && unsmoothed.rawMisses == 0,
+               "the slower scene must be ready before every raw deadline");
+        expect(current.growth == 0 && current.maximumBufferUs == 8000 &&
+                   current.finalBufferUs == 8000 && unsmoothed.growth == 0,
+               "smoothing must not turn the slow scene's spare readiness time into standing buffer growth");
+        expect(current.jerkOver2ms <= previous.jerkOver2ms,
+               "preventing smoothing-only growth must not add hitches to this slow scene");
+        if (mode == 0) {
+            expect(previous.growth > 30 && previous.smoothingOnlyGrowth == previous.growth &&
+                       previous.maximumBufferUs > 9000,
+                   "the recorded policy must reproduce repeated smoothing-only growth with 4 ms of raw slack");
+        }
+        const auto late = runLowRateSmoothingFixture(mode, true, true, 12000);
+        expect(late.rawMisses > 0 && late.growth > 0 && late.smoothingOnlyGrowth == 0,
+               "genuine raw-readiness misses must still acquire protection in every preset");
+        std::printf("30 FPS slack mode=%d growth=%llu -> %llu buffer=%llu -> %llu us raw-late growth=%llu\n",
+            mode, (unsigned long long)previous.growth, (unsigned long long)current.growth,
+            (unsigned long long)previous.maximumBufferUs, (unsigned long long)current.maximumBufferUs,
+            (unsigned long long)late.growth);
+    }
+    // Exercise the actual Smooth hold/release policy too: repeated attempts
+    // at an early slot must not retain protection the raw-ready scene can shed.
+    const auto previous = runLowRateSmoothingFixture(0, false, true, 4000, true);
+    const auto current = runLowRateSmoothingFixture(0, true, true, 4000, true);
+    // Once delay drains, real raw misses can occur and regain protection;
+    // those must remain distinct from smoothing-only growth.
+    expect(previous.smoothingOnlyGrowth > 0 && current.smoothingOnlyGrowth == 0 &&
+               current.releases > previous.releases &&
+               current.finalBufferUs + 1000 < previous.finalBufferUs,
+           "smoothing-only misses must stop renewing the hold and allow qualified clean recovery");
+    std::printf("30 FPS recovery final buffer=%llu -> %llu us releases=%llu -> %llu raw misses=%llu -> %llu smoothing-only growth=%llu -> %llu\n",
+        (unsigned long long)previous.finalBufferUs, (unsigned long long)current.finalBufferUs,
+        (unsigned long long)previous.releases, (unsigned long long)current.releases,
+        (unsigned long long)previous.rawMisses, (unsigned long long)current.rawMisses,
+        (unsigned long long)previous.smoothingOnlyGrowth, (unsigned long long)current.smoothingOnlyGrowth);
 }
 
 // Reduce judder fixtures: host present stamps and client delivery, both in
@@ -6279,6 +6408,7 @@ int main()
     testWindowedSmoothingQuantizedCadence();
     testCompensatedHalfPeriodCadence();
     testWindowedSmoothingResetsOnDiscontinuity();
+    testLowRateSmoothingPreservesReadinessSlack();
     testResponsiveReadinessKeepsEarlySlack();
     testResponsiveBufferRecoveryAndDesktopCadence();
     testLatencyFixModeSelection();

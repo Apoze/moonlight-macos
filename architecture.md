@@ -5,9 +5,8 @@ of a session working on streaming, decoding, rendering, VRR, latency, or replay.
 It explains the implementation and the reasoning needed to investigate it;
 it does not establish that a particular deployed executable matches the source.
 
-Current source review baseline: `b33a8f9a` plus the 2026-09-27 buffer recovery
-and Linux PyroWave completion, graphics-queue, and coalesced coefficient-store
-changes in this worktree. Deployment and live
+Current source review baseline: `48999f16` plus the 2026-09-30 Reduce judder
+readiness-bound and interval-buffer attribution changes in this worktree. Deployment and live
 smoothness must be verified separately from this source description.
 
 The first live Windows PyroWave retry negotiated H.264 because the common library
@@ -875,6 +874,45 @@ Exploratory replay of the 15-capture corpus, which cannot model frame shedding:
   23.8 to 19.0 ms, with presented jerk over 2 ms +1 per mille.
 - Two Balanced 2026-09-26 captures gained 0.3-0.7 ms p50 at +3 to +4 per mille.
 - The remaining captures were unchanged.
+
+### Reduce judder readiness bound and buffer attribution (2026-09-30)
+
+Production interval-buffer sessions with Reduce judder enable
+`playout_smoothing_readiness_bound=1`. Its zero schema default preserves the
+old smoother and buffer attribution for captures that lack the field.
+
+Early retiming may use only the current frame's known decode-readiness slack:
+the total smoothing adjustment cannot fall below
+`min(0, readyOffset - delayBeforeThisFrame)`. This retains the raw target's
+typical-render allowance. The existing execution clamp still handles worker
+backlog and later preparation variance. The smoother's next clock basis and
+its readiness-reserve observations use the requested, unconstrained retiming;
+feeding a readiness-clipped target back into that clock propagates a single
+late frame and spoils ordinary host-quantized cadence.
+
+The interval observer's readiness deadline is the later of the raw and applied
+smoothed targets. A frame ready before its raw deadline can therefore neither
+grow the standing playout buffer nor renew its clean-time hold merely because
+Reduce judder attempted an earlier slot. Genuine raw-readiness misses still
+grow protection under the existing interval-quality, capacity and service gates.
+Smoothing's own reserve remains separately bounded to 3 ms. A lower source rate
+supplies processing/spacing capacity; it does not guarantee that every frame is
+ready a fixed number of milliseconds before its timestamp-playout deadline.
+
+The deterministic 120-to-30 FPS fixture learns the heavier 9 ms preparation cost
+before adding alternating 21/45 ms sender intervals and 4 ms readiness variation.
+With release frozen to isolate growth, all noisy frames are ready before their
+raw targets. Smooth previously made 60 smoothing-only growth decisions, raising
+8 ms to 9.278 ms; the corrected policy keeps 8 ms with zero growth. With normal
+release enabled, delay drains to 5.789 ms instead of remaining at 9.274 ms;
+genuine raw misses as delay drains still retain protection. Separate
+late-readiness variants retain growth in all three presets. This is controller
+evidence, not a measured live improvement.
+The newest completed local capture, `20260930-213542-1353491`, stays near 95 FPS
+and does not contain the reported slowdown. Its controller decisions reproduce,
+but the full exact replay gate fails; it cannot establish strict live A/B results.
+The smoothing calibration identity includes this bound to avoid seeding the new
+policy from a delay acquired under the old attribution.
 
 ### Reduce judder readiness reserve and wider retiming (2026-09-22)
 
@@ -2347,6 +2385,7 @@ It also sets `latchedFloorDisabled=1` and disables the extra queue-mode budget.
 | Smoothing period EMA | 25 per mille with fractional carry, plus 20,000 per million phase-error feedback; active only with smoothing enabled |
 | Positive smoothing lag cap | 6,000 us, shared with the readiness reserve; active only with smoothing enabled |
 | Smoothing readiness reserve | p98 of the last 128 smoother-caused shortfalls minus 500 us, at most 3,000 us, +250 us per frame, released at 500 us/s; zero when unchecked |
+| Smoothing readiness bound | Enabled with Reduce judder; early retiming preserves known decode readiness and the raw target's typical render allowance; smoothing-only misses cannot grow or renew the interval buffer |
 | Render lead floor | 3,000 us |
 | Preparation start | Use the existing playout interval (`playout_prepare_on_arrival=1`), with no additional post-submission delay |
 | Minimum preparation lead input | 2,500 us |
@@ -2428,6 +2467,12 @@ adjustment     = 0.85 * error
 adjustment     = clamp(adjustment, -(delayBeforeThisFrame + R), 6000 us - R)
 smoothedBasis  = raw + R + adjustment         # cadence_smoothing_us = R + adjustment
 ```
+
+With the production readiness bound, `adjustment` above is the requested
+smoother adjustment. Its clock basis retains that request, while the applied
+total adjustment is bounded below by `min(0, readyOffset - delayBeforeThisFrame)`.
+Reserve learning also retains the request, so this per-frame bound does not
+erase the shortfall the bounded smoothing reserve is intended to cover.
 
 `R` is applied to every timestamp-playout frame while smoothing is enabled,
 including frames the smoother cannot currently place, so a cadence reset does
@@ -2720,7 +2765,11 @@ Reserve p99.95 implementation.
 Production sets `playout_prediction_only=1` and `playout_responsive_buffer=7`
 for every normal VRR session. The interval-quality observer described above owns
 requested delay, with 125 us per-frame attack application and preset-timed
-release. It bypasses the following historical percentile growth/release law.
+release. With `playout_smoothing_readiness_bound=1`, its readiness attribution
+uses the later of the raw and smoothed targets, excluding misses caused solely
+by advancing an otherwise on-time frame. The same attribution governs hold
+renewal, allowing clean recovery instead of retaining smoothing-induced delay.
+It bypasses the following historical percentile growth/release law.
 The retired revision-4 estimator keeps 100 ms buckets over the selected preset's learning
 window, including successes. Lowest latency uses 99% over 30 seconds, Balanced
 99.5% over 60 seconds, and Smoothest 99.95% over 120 seconds. These are

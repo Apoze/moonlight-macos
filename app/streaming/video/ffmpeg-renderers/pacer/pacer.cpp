@@ -339,6 +339,10 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps,
                     .arg(policy.playoutSmoothingWindowedCadence)
                     .arg(policy.playoutSmoothingRecoveryUs);
                 context += QStringLiteral("|catchup=%1").arg(policy.playoutCatchupPerMille);
+                if (policy.playoutSmoothingReadinessBound != 0) {
+                    context += QStringLiteral("|smoothing-readiness-bound=%1")
+                        .arg(policy.playoutSmoothingReadinessBound);
+                }
                 if (policy.playoutSmoothingReserveMaxUs != 0 ||
                         policy.playoutSmoothingPeriodFeedbackPerMillion != 0) {
                     context += QStringLiteral("|smoothing-reserve=%1-%2-%3-%4|period-feedback=%5")

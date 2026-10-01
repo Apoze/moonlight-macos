@@ -103,6 +103,7 @@ void VrrReplayConfigTest::judderReservePolicyRoundTrip()
     VrrTimingParameters parameters;
     QCOMPARE(parameters.playoutSmoothingReserveMaxUs, uint64_t(0));
     QCOMPARE(parameters.playoutSmoothingPeriodFeedbackPerMillion, uint64_t(0));
+    QCOMPARE(parameters.playoutSmoothingReadinessBound, uint64_t(0));
     QString error;
     const auto production = vrrTimingParametersForSession(VrrSessionConfig{});
     QVERIFY2(applyVrrReplayControllerSnapshot(vrrTimingParametersToJson(production), parameters, error), qPrintable(error));
@@ -111,6 +112,10 @@ void VrrReplayConfigTest::judderReservePolicyRoundTrip()
     QCOMPARE(parameters.playoutSmoothingReserveToleranceUs, uint64_t(500));
     QCOMPARE(parameters.playoutSmoothingReservePercentilePerMille, uint64_t(980));
     QCOMPARE(parameters.playoutSmoothingReserveReleaseUsPerSecond, uint64_t(500));
+    QCOMPARE(parameters.playoutSmoothingReadinessBound, uint64_t(1));
+    QVERIFY(vrrReplayParameterNames().contains("controller.playout_smoothing_readiness_bound"));
+    QVERIFY(!applyVrrReplayControllerSnapshot(
+        {{"playout_smoothing_readiness_bound", 2}}, parameters, error));
     QCOMPARE(parameters.playoutSmoothingPeriodFeedbackPerMillion, uint64_t(20000));
     // The reserve shares the positive retiming budget and cannot exceed it.
     QVERIFY(!applyVrrReplayControllerSnapshot(
@@ -132,15 +137,18 @@ void VrrReplayConfigTest::judderReservePolicyRoundTrip()
     historical.remove("playout_smoothing_reserve_percentile_per_mille");
     historical.remove("playout_smoothing_reserve_release_us_per_second");
     historical.remove("playout_smoothing_period_feedback_per_million");
+    historical.remove("playout_smoothing_readiness_bound");
     parameters = VrrTimingParameters{};
     QVERIFY2(applyVrrReplayControllerSnapshot(historical, parameters, error), qPrintable(error));
     QCOMPARE(parameters.playoutSmoothingReserveMaxUs, uint64_t(0));
     QCOMPARE(parameters.playoutSmoothingPeriodFeedbackPerMillion, uint64_t(0));
+    QCOMPARE(parameters.playoutSmoothingReadinessBound, uint64_t(0));
     VrrSessionConfig unchecked;
     unchecked.smoothFrameTiming = false;
     const auto disabled = vrrTimingParametersForSession(unchecked);
     QCOMPARE(disabled.playoutSmoothingReserveMaxUs, uint64_t(0));
     QCOMPARE(disabled.playoutSmoothingPeriodFeedbackPerMillion, uint64_t(0));
+    QCOMPARE(disabled.playoutSmoothingReadinessBound, uint64_t(0));
 }
 
 void VrrReplayConfigTest::defaultsRoundTrip()

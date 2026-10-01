@@ -221,7 +221,8 @@
     X(uint64_t, playout_epoch_rate_ratio_per_mille, playoutEpochRateRatioPerMille, 0) \
     X(uint64_t, playout_epoch_sustain_us, playoutEpochSustainUs, 0) \
     X(uint64_t, playout_delay_decrease_slew_us, playoutDelayDecreaseSlewUs, 0) \
-    X(uint64_t, playout_epoch_confirm_us, playoutEpochConfirmUs, 0)
+    X(uint64_t, playout_epoch_confirm_us, playoutEpochConfirmUs, 0) \
+    X(uint64_t, playout_smoothing_readiness_bound, playoutSmoothingReadinessBound, 0)
 
 // Every value that changes VRR policy remains replaceable by replay without
 // rebuilding the controller. Production callers use these defaults.
