@@ -7,7 +7,8 @@ it does not establish that a particular deployed executable matches the source.
 
 Current source review baseline: `48999f16` plus the 2026-09-30 Reduce judder
 readiness-bound and interval-buffer attribution changes, plus the 2026-10-01
-above-target shrinkage correction in this worktree. Deployment and live
+above-target shrinkage correction and per-interval excess scoring in this
+worktree. Deployment and live
 smoothness must be verified separately from this source description.
 
 The first live Windows PyroWave retry negotiated H.264 because the common library
@@ -714,8 +715,8 @@ fence-value-verified Windows readiness waits, bounded Vulkan source retirement,
 bounded GPU-readiness head-start adaptation, and cadence-gated,
 elapsed-time source-offset recovery. The latency
 presets and persistent Vulkan presentation changes remain active.
-Windows and Linux share one production queue policy: mean absolute client-added
-interval error over one second with a profile-selected tolerance (0.5 ms for Low
+Windows and Linux share one production queue policy: absolute client-added
+interval error with a profile-selected tolerance applied per interval (0.5 ms for Low
 Latency and Balanced Target, 0.2 ms for Smooth), driving the severity-weighted
 preset-duration quality score. Low Latency / Balanced Target / Smooth seek
 99% / 99.5% / 99.99% over 1/2/5 minutes, with 6/8/10-second holds and
@@ -1423,7 +1424,7 @@ the shared-device/copy path against the separate-device/bind path.
 
 ### Production interval-quality queue (promoted from V2)
 
-Every normal VRR session now selects revision 7 without an A/B setting. The queue
+Every normal VRR session now selects revision 9 without an A/B setting. The queue
 uses 0.5 ms tolerance for Low Latency and Balanced Target and 0.2 ms for Smooth;
 explicit revision 8 retains its 250 us tolerance for historical replay. Preset
 targets and severity weighting remain active.
@@ -1438,12 +1439,14 @@ are removed before scoring. Submission boundaries are a display-timing proxy,
 not optical scanout confirmation. Discontinuous/missing frames break the pair;
 their drops remain separately visible.
 
-The controller and overlay share one one-second average (10 ms buckets). After
+The controller and overlay share a diagnostic one-second average (10 ms buckets). After
 initial qualification (500 ms and 32 intervals), or one-second requalification
-following a later sequence break, mean error through the selected profile tolerance
+following a later sequence break, interval error through the selected profile tolerance
 is accepted (0.5 ms for Low Latency/Balanced Target, 0.2 ms for Smooth). For each
-evaluated interval, revision 7 computes
-`loss = clamp(max(meanErrorUs - toleranceUs, 0) / intendedIntervalUs, 0, 1)`.
+evaluated interval, revision 9 computes
+`loss = clamp(max(intervalErrorUs - toleranceUs, 0) / intendedIntervalUs, 0, 1)`.
+Revisions 7/8 instead use `meanErrorUs`, retaining their captured scoring and
+growth behavior for historical replay.
 The shared score is `100 * (1 - sum(actualIntervalUs * loss) / sum(actualIntervalUs))`
 over the selected preset's one/two/five-minute history, using 100 ms buckets.
 Loss retains fractional microseconds rather than rounding every frame. Missing
@@ -1454,10 +1457,10 @@ The same calculation serves all presets and both controller and overlay.
 
 Low Latency / Balanced Target / Smooth seek 99% / 99.5% / 99.99%, respectively,
 over one / two / five minutes.
-An attack requires the preset-duration score below its target, current one-second loss
+An attack requires the preset-duration score below its target, current interval loss
 above the preset's allowed loss, and a fresh interval error over the selected
 tolerance with
-readiness-attributable lateness. It acquires only the current mean excess above
+readiness-attributable lateness. It acquires only the current interval excess above
 the preset allowance (`(1 - target) * intendedIntervalUs`), bounded by fresh
 error above tolerance, the affected frame's lateness, 250 us per 250 ms, and
 125 us applied per frame. The attributed frame must also be absorbable: its
@@ -2353,7 +2356,7 @@ timing parameters. Exact replay uses captured parameters, independent of whether
 the recording was enabled through Settings or an external launcher.
 
 The resolver enables timestamp playout, shared readiness history and adaptive
-delay. Both Linux and Windows use the revision-7 interval policy: client-added
+delay. Both Linux and Windows use the revision-9 interval policy: client-added
 submission-interval error triggers growth only with attributable late work that
 can fit its intended interval. The older thresholded-event policy is disabled
 with `playout_readiness_hitch_threshold_us=0`. Native-hitch adaptation is disabled.
@@ -2367,7 +2370,7 @@ zero initializer values preserve historical replay when captures omit them.
 The latency presets set independent caps; per-frame native slot protection
 remains enabled.
 Display smoothness feedback remains diagnostic. Historical Linux thresholded
-submission-error attribution is retained for replay; live revision 7 uses the
+submission-error attribution is retained for replay; live revision 9 uses the
 shared interval policy described above.
 Historical feedback policies remain selectable for exact replay.
 It disables the retired metronome and enables preparation on arrival.
@@ -2771,10 +2774,17 @@ legacy/replay behavior. In that branch 1000 per mille means p100, 999 means
 p99.9, and 995 means p99.5. Those values must not be confused with the active
 Reserve p99.95 implementation.
 
-Production sets `playout_prediction_only=1` and `playout_responsive_buffer=7`
+Production sets `playout_prediction_only=1` and `playout_responsive_buffer=9`
 for every normal VRR session. The interval-quality observer described above owns
 requested delay, with 125 us per-frame attack application and preset-timed
-release. With `playout_smoothing_readiness_bound=1`, its readiness attribution
+release. Revision 9 scores each interval as
+`min(1, max(abs(actualInterval - intendedInterval) - tolerance, 0) / intendedInterval)`
+and averages that fractional loss over evaluated time in the preset's history
+window. The one-second mean remains diagnostic. Fresh per-interval excess and
+below-target history authorize growth only with eligible, absorbable late
+readiness; the 250 us request step and 250 ms cooldown remain unchanged.
+Revisions 7/8 retain their mean-before-tolerance scoring for exact replay.
+With `playout_smoothing_readiness_bound=1`, its readiness attribution
 uses the later of the raw and smoothed targets, excluding misses caused solely
 by advancing an otherwise on-time frame. The same attribution governs hold
 renewal, allowing clean recovery instead of retaining smoothing-induced delay.
@@ -3512,9 +3522,13 @@ available outcomes before 30 seconds have elapsed. This remains a readiness
 measurement, not a visible-smoothness score. With no eligible frames, the line
 shows the starting state. Revision 4 applies the same thresholded-miss policy to
 this score: through 1 ms is on time, 1-2 ms counts only above 50% prevalence,
-and over 2 ms or a drop always counts. Production revision 7 instead reports
+and over 2 ms or a drop always counts. Production revision 9 instead reports
 the interval buffer's one-second mean error and severity-weighted quality over
 the preset's history window; these are not that older readiness percentage.
+Tolerance is applied to each interval before time-weighted averaging, so
+isolated excess cannot disappear beneath a clean one-second mean. The score
+still measures severity, rather than the share of frames inside tolerance;
+unobserved sequence gaps remain excluded and drops are reported separately.
 
 With deep tracing off, the overview retains the VRR17 frame queue delay,
 rendering time, incoming host smoothness, VRR pacing/smoothness target, and
@@ -3585,7 +3599,7 @@ and does not exclude long local arrival gaps when RTP is steady. The older
 including their sender/arrival exclusions, for comparison.
 
 These replay spacing fields use submission timing as a presentation proxy.
-Current revision 7 uses submission-interval error with readiness attribution to
+Current revision 9 uses submission-interval error with readiness attribution to
 control padding; native confirmation remains diagnostic. Historical prediction-
 only policies instead derive padding from readiness prediction.
 Report `smoothness_feedback.native_window_samples` and `native_window_misses`

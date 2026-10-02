@@ -976,7 +976,7 @@ void testProductionPreparationUsesAvailableSlack()
                    policy.renderStartAfterSubmissionUs == 0 &&
                    policy.renderStartPreserveLearnedLead == 1,
                "production must spend the playout cushion on preparation without squeezing learned lead");
-        expect(policy.playoutResponsiveBuffer == 7 &&
+        expect(policy.playoutResponsiveBuffer == 9 &&
                    policy.playoutSerialServiceGate == 2 &&
                    policy.playoutSourceMappingDecoderOutput == 0 &&
                    policy.playoutSmoothingGainPerMille == 150,
@@ -3003,6 +3003,9 @@ void testBalancedReadinessFloorFollowsLoad()
     }
     const auto run = [&](uint64_t perMille, bool tailOnly = false) {
         auto policy = production;
+        // This fixture isolates the recorded revision-7 readiness floor.
+        // Production revision 9 may raise delay without that floor.
+        policy.playoutResponsiveBuffer = 7;
         policy.playoutReadinessFloorPerMille = perMille;
         VrrTimingController controller(session, true, policy);
         uint64_t loadedUs = 0, relievedUs = 0;
@@ -5653,7 +5656,7 @@ void testPresetReadinessTargets()
         const auto policy = vrrTimingParametersForSession(session);
         const uint64_t target = mode == 2 ? 990000 : mode == 1 ? 995000 : 999900;
         const uint64_t window = mode == 2 ? 60000000 : mode == 1 ? 120000000 : 300000000;
-        expect(policy.playoutResponsiveBuffer == 7 &&
+        expect(policy.playoutResponsiveBuffer == 9 &&
                    policy.playoutOnTimeTargetPerMillion == target &&
                    policy.playoutReadinessWindowUs == window,
                "presets must resolve their exact reliability target and bounded history");
@@ -5767,7 +5770,7 @@ void testMeanMissBuffer()
         auto session = config(116, 120);
         session.latencyMode = mode;
         const auto policy = vrrTimingParametersForSession(session);
-        expect(policy.playoutResponsiveBuffer == 7 &&
+        expect(policy.playoutResponsiveBuffer == 9 &&
             policy.playoutSourceMappingDecoderOutput == 0 &&
             policy.playoutSerialServiceGate == 2 &&
             policy.playoutRecentPressureRelease == 3 &&
@@ -5809,6 +5812,112 @@ void testIntervalQualityBuffer()
             }
         }
     }
+}
+
+void testPerIntervalExcessQuality()
+{
+    // Two real errors surround one delayed frame. Clean intervals must not
+    // erase them, but both outcomes may authorize only one cooldown-bounded
+    // attack against the same delayed frame's applied buffer.
+    for (int mode : {0, 1, 2}) {
+        auto session = config(100, 120);
+        session.latencyMode = mode;
+        const auto policy = vrrTimingParametersForSession(session);
+        const uint64_t tolerance = mode == 0 ? 200 : 500;
+        for (int cause : {0, 1, 2, 3, 4}) {
+            Vrr13::IntervalBuffer current, recorded;
+            uint64_t applied = 1000;
+            unsigned attacks = 0;
+            bool previousAttacked = false;
+            for (uint64_t i = 1; i <= 1200; ++i) {
+                const uint64_t intended = 1000000 + i * 10000;
+                const uint64_t late = i % 25 == 0 ? 2000 : 0;
+                Vrr13::IntervalBuffer::Sample sample{
+                    i, intended, intended + late, intended,
+                    intended + (cause == 1 ? 0 : late), applied,
+                    true, cause != 3, cause == 2 ? 11000ULL : 1000ULL,
+                    cause == 4 ? 11000ULL : 0ULL};
+                const auto observe = [&](Vrr13::IntervalBuffer& buffer, bool perInterval) {
+                    buffer.observe(sample, 1000, 4000,
+                        policy.playoutMeanMissHoldUs, policy.playoutMeanMissReleaseUsPerSecond,
+                        true, policy.playoutOnTimeTargetPerMillion, tolerance,
+                        policy.playoutReadinessWindowUs, 500000, 32, 3, 2, 3, perInterval);
+                };
+                observe(recorded, false);
+                const auto before = current.demand(applied);
+                observe(current, true);
+                applied = current.demand(applied);
+                attacks += applied > before;
+                expect(applied >= 1000 && applied <= 4000 && applied <= before + 250,
+                       "per-interval scoring must retain bounded attack and delay caps");
+                if (i % 25 == 1 && i > 26 && previousAttacked) {
+                    expect(applied <= before,
+                           "catch-up must not buy a second increase for the same delayed frame");
+                }
+                previousAttacked = applied > before;
+            }
+            expect(recorded.stats().qualityPercent() == 100.0,
+                   "recorded mean-before-tolerance policy must keep its historical score");
+            expect(current.stats().averageErrorUs < tolerance &&
+                       current.stats().qualityPercent() < policy.playoutOnTimeTargetPerMillion / 10000.0,
+                   "rare above-tolerance intervals must penalize quality despite a clean one-second mean");
+            expect(cause == 0 ? attacks > 0 : attacks == 0,
+                   "only eligible late readiness with spare serial capacity may increase protection");
+        }
+    }
+
+    for (uint64_t error : {500ULL, 501ULL}) {
+        Vrr13::IntervalBuffer buffer;
+        for (uint64_t i = 1; i <= 200; ++i) {
+            const uint64_t intended = 1000000 + i * 10000;
+            const uint64_t late = i % 2 ? error : 0;
+            buffer.observe({i, intended, intended + late, intended, intended + late,
+                            1000, true, true, 1000, 0},
+                           1000, 4000, 6000000, 250, true, 990000,
+                           500, 60000000, 500000, 32, 3, 2, 3, true);
+        }
+        expect(error == 500 ? buffer.stats().qualityPercent() == 100.0 :
+                   buffer.stats().qualityPercent() < 100.0,
+               "tolerance boundary must be exact without rounding away one-microsecond excess");
+        expect(std::abs(buffer.stats().qualityPercent() -
+                   (error == 500 ? 100.0 : 99.99)) < 1e-9,
+               "fractional loss must use interval excess divided by intended spacing exactly");
+    }
+
+    Vrr13::IntervalBuffer constant;
+    for (uint64_t i = 1; i <= 200; ++i) {
+        const uint64_t intended = 1000000 + i * 10000;
+        constant.observe({i, intended, intended + 3000, intended, intended + 3000,
+                          1000, true, true, 1000, 0},
+                         1000, 4000, 6000000, 250, true, 990000,
+                         500, 60000000, 500000, 32, 3, 2, 3, true);
+    }
+    expect(constant.stats().qualityPercent() == 100.0 && constant.demand(1000) == 1000,
+           "constant latency must cancel from interval quality and must not grow buffering");
+}
+
+void testPerIntervalBufferPreventsRecoverableSpikes()
+{
+    Vrr13::IntervalBuffer buffer;
+    uint64_t applied = 1000;
+    uint64_t excess = 0, unprotectedExcess = 0, peak = applied;
+    for (uint64_t i = 1; i <= 4000; ++i) {
+        const uint64_t intended = 1000000 + i * 10000;
+        const uint64_t ready = intended + (i % 25 == 0 ? 3000 : 1000);
+        const uint64_t deadline = intended + applied;
+        const uint64_t submitted = std::max(ready, deadline);
+        excess += ready > deadline + 500 ? ready - deadline - 500 : 0;
+        unprotectedExcess += ready > intended + 1500 ? ready - intended - 1500 : 0;
+        buffer.observe({i, intended, submitted, deadline, ready, applied,
+                        true, true, 1000, 0},
+                       1000, 8000, 6000000, 250, true, 990000,
+                       500, 60000000, 500000, 32, 3, 2, 3, true);
+        applied = buffer.demand(applied);
+        peak = std::max(peak, applied);
+    }
+    expect(peak > 1000 && peak <= 4000 && excess < unprotectedExcess &&
+               buffer.stats().qualityPercent() >= 99.0,
+           "buffering must reduce modeled recoverable excess without chasing the delay cap");
 }
 
 void testIntervalBufferReleaseAcrossShortGaps()
@@ -6473,6 +6582,8 @@ int main()
     testInitialIntervalCalibration();
     testBufferDecisionDiagnostics();
     testIntervalQualityBuffer();
+    testPerIntervalExcessQuality();
+    testPerIntervalBufferPreventsRecoverableSpikes();
     testIntervalBufferReleaseAcrossShortGaps();
     testAlternatingSlowCadenceLeavesFastRate();
     testInitialPreparationIsNotTypicalRender();

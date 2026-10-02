@@ -6,10 +6,10 @@
 #include <vector>
 
 namespace Vrr13 {
-// One definition for buffering and reporting: mean absolute client-added
-// interval error, including zero-error intervals, over the last second. The
-// caller selects the profile tolerance; the quality score retains the
-// preset's longer history independently of that one-second detection average.
+// Client-added interval error, including zero-error intervals. Production
+// scores excess above tolerance per interval before averaging over history;
+// the one-second mean remains diagnostic. Recorded policies retain their
+// historical mean-before-tolerance behavior.
 class IntervalBuffer {
 public:
     static constexpr uint64_t ToleranceUs = 500;
@@ -82,7 +82,8 @@ public:
                  size_t initialMinimumSamples = 2,
                  uint64_t recentPressureRelease = 0,
                  uint64_t serialServiceGate = 0,
-                 uint64_t holdRenewBelowTarget = 0) {
+                 uint64_t holdRenewBelowTarget = 0,
+                 bool perIntervalExcess = false) {
         m_Stats.toleranceUs = toleranceUs;
         m_Stats.severityWeighted = severityWeighted;
         minimum = std::min(minimum, maximum);
@@ -171,16 +172,18 @@ public:
         m_Stats.initialCalibrationComplete = true;
         m_Stats.serviceOverloaded = service > intendedTime || decoderQueue > intendedTime;
         const bool pressure = total > samples * toleranceUs;
-        // Weight the score by evaluated time, not frame rate. Attribute the
-        // preceding interval to its evaluated one-second mean; gaps are unknown.
+        // Weight the score by evaluated time, not frame rate; gaps are unknown.
+        // Revision 9 applies tolerance before averaging so clean intervals
+        // cannot erase excess from isolated late/catch-up intervals.
         auto& score = m_Score[(s.submitted / 100000) % m_Score.size()];
         if (score.tick != s.submitted / 100000) score = ScoreBucket{s.submitted / 100000};
         score.evaluated += actual;
-        if (pressure) score.failed += actual;
+        if (perIntervalExcess ? error > toleranceUs : pressure) score.failed += actual;
         // Revision 7 measures severity rather than treating a tiny crossing as
         // a completely failed interval. Keep sub-microsecond loss in double so
         // Smooth's 99.99% target is not biased by per-frame rounding.
-        const double excessUs = std::max(0.0, m_Stats.averageErrorUs - toleranceUs);
+        const double excessUs = std::max(0.0,
+            (perIntervalExcess ? double(error) : m_Stats.averageErrorUs) - toleranceUs);
         const double loss = std::min(1.0, excessUs / intended);
         if (severityWeighted) score.weightedLoss += actual * loss;
         updateScore(s.submitted, scoreWindowUs);

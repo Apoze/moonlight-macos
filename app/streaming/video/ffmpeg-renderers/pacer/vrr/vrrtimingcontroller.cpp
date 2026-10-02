@@ -191,7 +191,7 @@ VrrTimingParameters vrrTimingParametersForSession(
     parameters.playoutPredictionOnly = 1;
     // Every normal VRR session uses the interval-quality queue. Historical
     // policies remain selectable only through explicit diagnostic parameters.
-    parameters.playoutResponsiveBuffer = config.readinessHitchFeedback ? 0 : 7;
+    parameters.playoutResponsiveBuffer = config.readinessHitchFeedback ? 0 : 9;
     // Timeline mapping anchors to decode completion, absorbing hardware decode
     // duration into the sender offset instead of inflating client buffer delay.
     parameters.playoutSourceMappingDecoderOutput = 0;
@@ -2201,7 +2201,8 @@ void VrrTimingController::noteSubmission(bool submitted, bool cancelled,
                 m_Parameters.playoutIntervalInitialMinimumSamples,
                 m_Parameters.playoutRecentPressureRelease,
                 m_Parameters.playoutSerialServiceGate,
-                m_Parameters.playoutHoldRenewBelowTarget);
+                m_Parameters.playoutHoldRenewBelowTarget,
+                m_Parameters.playoutResponsiveBuffer >= 9);
         }
         else m_MeanMissBuffer.observe(submissionUs, ready > deadline ? ready - deadline : 0,
             p.applied, submitted && !cancelled && m_Pending.hasPreparationDuration &&
