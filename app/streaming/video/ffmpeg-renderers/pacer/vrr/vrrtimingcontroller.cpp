@@ -215,9 +215,9 @@ VrrTimingParameters vrrTimingParametersForSession(
     // presented jerk. Profiles order every trade the same way, so Low Latency
     // releases at least as fast as Balanced, and Smooth slowest.
     parameters.playoutMeanMissReleaseUsPerSecond = latencyMode == 0 ? 50 : 250;
-    // A dip that leaves the quality score above target does not restart the
-    // hold, so release resumes at the rate above once the dip passes.
-    parameters.playoutHoldRenewBelowTarget = parameters.playoutResponsiveBuffer >= 7 ? 1 : 0;
+    // Above-target score changes neither renew the hold nor pause recovery.
+    // Captured revisions 0/1/2 retain their historical pressure behavior.
+    parameters.playoutHoldRenewBelowTarget = parameters.playoutResponsiveBuffer >= 7 ? 3 : 0;
     // No profile floors its delay at a recent ready-offset percentile. Such a
     // floor counts every late frame, including a decoder that has fallen
     // behind, and held Balanced at its ceiling after an ordinary startup
@@ -2201,7 +2201,7 @@ void VrrTimingController::noteSubmission(bool submitted, bool cancelled,
                 m_Parameters.playoutIntervalInitialMinimumSamples,
                 m_Parameters.playoutRecentPressureRelease,
                 m_Parameters.playoutSerialServiceGate,
-                m_Parameters.playoutHoldRenewBelowTarget != 0);
+                m_Parameters.playoutHoldRenewBelowTarget);
         }
         else m_MeanMissBuffer.observe(submissionUs, ready > deadline ? ready - deadline : 0,
             p.applied, submitted && !cancelled && m_Pending.hasPreparationDuration &&

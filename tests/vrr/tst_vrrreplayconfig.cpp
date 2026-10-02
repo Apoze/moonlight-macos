@@ -304,6 +304,7 @@ void VrrReplayConfigTest::offsetRecoveryPolicyRoundTrip()
     QCOMPARE(restored.playoutSourceMappingDecoderOutput, uint64_t(0));
     QCOMPARE(restored.playoutSerialServiceGate, uint64_t(2));
     QCOMPARE(restored.playoutRecentPressureRelease, uint64_t(3));
+    QCOMPARE(restored.playoutHoldRenewBelowTarget, uint64_t(3));
     QVERIFY(vrrReplayParameterNames().contains("controller.playout_offset_cadence_gate"));
     QVERIFY(vrrReplayParameterNames().contains("controller.playout_offset_slew_us_per_second"));
     QVERIFY(vrrReplayParameterNames().contains("controller.playout_offset_source_clock"));
@@ -323,6 +324,7 @@ void VrrReplayConfigTest::offsetRecoveryPolicyRoundTrip()
     oldSnapshot.remove("playout_source_mapping_decoder_output");
     oldSnapshot.remove("playout_serial_service_gate");
     oldSnapshot.remove("playout_recent_pressure_release");
+    oldSnapshot.remove("playout_hold_renew_below_target");
     oldSnapshot.remove("playout_catchup_per_mille");
     VrrTimingParameters historical;
     QVERIFY2(applyVrrReplayControllerSnapshot(oldSnapshot, historical, error), qPrintable(error));
@@ -333,6 +335,7 @@ void VrrReplayConfigTest::offsetRecoveryPolicyRoundTrip()
     QCOMPARE(historical.playoutSourceMappingDecoderOutput, uint64_t(0));
     QCOMPARE(historical.playoutSerialServiceGate, uint64_t(0));
     QCOMPARE(historical.playoutRecentPressureRelease, uint64_t(0));
+    QCOMPARE(historical.playoutHoldRenewBelowTarget, uint64_t(0));
     QCOMPARE(historical.playoutCatchupPerMille, uint64_t(0));
 
     auto revisionOneSnapshot = snapshot;
@@ -372,6 +375,16 @@ void VrrReplayConfigTest::offsetRecoveryPolicyRoundTrip()
     invalid.playoutRecentPressureRelease = 3;
     QVERIFY(validateVrrTimingParameters(invalid, error));
     invalid.playoutRecentPressureRelease = 4;
+    QVERIFY(!validateVrrTimingParameters(invalid, error));
+    for (uint64_t revision = 0; revision <= 3; ++revision) {
+        auto holdSnapshot = snapshot;
+        holdSnapshot["playout_hold_renew_below_target"] = int(revision);
+        QVERIFY2(applyVrrReplayControllerSnapshot(holdSnapshot, historical, error),
+                 qPrintable(error));
+        QCOMPARE(historical.playoutHoldRenewBelowTarget, revision);
+    }
+    invalid = restored;
+    invalid.playoutHoldRenewBelowTarget = 4;
     QVERIFY(!validateVrrTimingParameters(invalid, error));
 }
 

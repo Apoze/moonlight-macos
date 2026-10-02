@@ -82,7 +82,7 @@ public:
                  size_t initialMinimumSamples = 2,
                  uint64_t recentPressureRelease = 0,
                  uint64_t serialServiceGate = 0,
-                 bool holdRenewsBelowTargetOnly = false) {
+                 uint64_t holdRenewBelowTarget = 0) {
         m_Stats.toleranceUs = toleranceUs;
         m_Stats.severityWeighted = severityWeighted;
         minimum = std::min(minimum, maximum);
@@ -205,14 +205,18 @@ public:
         // service overload, cannot be repaired by retaining standing delay.
         // Keep the normal hold between attributable misses; do not change the
         // long quality score, attack qualification, or gradual release rate.
-        const bool pressureHolds = currentPressure &&
+        // Revision 2 permits continued recovery while the long score meets
+        // the preset target, even when recent pressure moves that score.
+        // Revision 1 only suppressed hold renewal and still paused release.
+        const bool targetAllowsHold = holdRenewBelowTarget < 2 ||
+            !severityWeighted || belowTarget;
+        const bool pressureHolds = targetAllowsHold && currentPressure &&
             (recentPressureRelease < 2 || (freshError && delayedAbsorbable && lateness));
         const bool holdProtection = pressureHolds ||
-            historyHolds;
-        // While the score still meets the target, a small dip pauses release
-        // for that frame without restarting the clean-time hold.
+            (targetAllowsHold && historyHolds);
+        // Preserve revision 1's above-target pause for historical captures.
         const bool renewsHold = holdProtection &&
-            (!holdRenewsBelowTargetOnly || !severityWeighted || belowTarget);
+            (!holdRenewBelowTarget || !severityWeighted || belowTarget);
         if (renewsHold) {
             m_LastPressure = s.submitted;
             if (severityWeighted) m_ReleaseFraction = 0;
@@ -223,11 +227,14 @@ public:
         // keeping a raised delay forever when a frame is missed every few
         // seconds, without counting the unknown gap as clean playback.
         if (recentPressureRelease >= 3) {
-            if (renewsHold || !s.absorbable || !windowAbsorbable) {
+            // A capacity dip pauses qualified recovery, but revision 3
+            // must not erase it while the long score meets the target.
+            if (renewsHold || ((holdRenewBelowTarget < 3 || targetAllowsHold) &&
+                               (!s.absorbable || !windowAbsorbable))) {
                 m_CleanEvidenceUs = 0;
                 m_LastCleanEvidenceUs = 0;
             }
-            else if (!holdProtection) {
+            else if (!holdProtection && s.absorbable && windowAbsorbable) {
                 m_CleanEvidenceUs = std::min<uint64_t>(
                     hold, m_CleanEvidenceUs + std::min<uint64_t>(actual, 100000));
                 m_LastCleanEvidenceUs = s.submitted;
@@ -245,7 +252,7 @@ public:
         update.cooldownRemainingUs = m_LastAttack ?
             remaining(s.submitted - m_LastAttack, 250000) : 0;
         update.action = pressureHolds ? Action::CurrentPressure :
-            historyHolds ? Action::HistoryHold : Action::RecoveryHold;
+            (targetAllowsHold && historyHolds) ? Action::HistoryHold : Action::RecoveryHold;
         const bool grow = currentPressure && (!severityWeighted || belowTarget);
         // Revision 1 mistook every slow frame for sustained overload. A
         // jitter buffer can cover a transient dependency stall when subsequent

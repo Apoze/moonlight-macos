@@ -5771,6 +5771,7 @@ void testMeanMissBuffer()
             policy.playoutSourceMappingDecoderOutput == 0 &&
             policy.playoutSerialServiceGate == 2 &&
             policy.playoutRecentPressureRelease == 3 &&
+            policy.playoutHoldRenewBelowTarget == 3 &&
             policy.playoutMeanMissHoldUs == (mode == 2 ? 6000000 : mode == 1 ? 8000000 : 10000000) &&
             policy.playoutMeanMissReleaseUsPerSecond == (mode == 0 ? 50 : 250),
             "every preset must select the production interval queue and record its release policy");
@@ -5973,6 +5974,85 @@ void testIntervalBufferAboveTargetDipDoesNotEraseRecovery()
     for (int i = 0; i < 180; ++i) observe(10000);
     expect(buffer.demand(3000) < 3000,
            "a short above-target timing dip must pause rather than restart earned recovery");
+}
+
+void testIntervalBufferThresholdControlsShrinkage()
+{
+    for (const uint64_t policy : {uint64_t(1), uint64_t(2), uint64_t(3)}) {
+        Vrr13::IntervalBuffer buffer;
+        uint64_t intendedUs = 1000000, submittedUs = intendedUs, frame = 0;
+        const auto observe = [&](uint64_t actualIntervalUs) {
+            intendedUs += 10000;
+            submittedUs += actualIntervalUs;
+            buffer.observe({++frame, intendedUs, submittedUs, intendedUs,
+                            intendedUs + 1000, 12000, true, true},
+                           1000, 16000, 8000000, 250, true, 995000,
+                           500, 120000000, 500000, 32, 3, 2, policy);
+        };
+        for (int i = 0; i < 3000; ++i) observe(10000);
+        bool sawFalling = false, sawRising = false, sawPressure = false;
+        for (int i = 0; i < 180; ++i) {
+            const auto before = buffer.stats();
+            const auto demand = buffer.demand(12000);
+            // A short burst raises the one-second error beyond its allowance,
+            // while the two-minute score stays above Balanced's 99.50% target.
+            observe(i < 40 ? (i % 2 ? 12000 : 8000) : 10000);
+            const auto after = buffer.stats();
+            expect(after.qualityPercent() >= 99.5,
+                   "above-target regression fixture must meet the selected target");
+            sawFalling |= after.qualityPercent() < before.qualityPercent();
+            sawRising |= after.qualityPercent() > before.qualityPercent();
+            sawPressure |= after.averageErrorUs > 550;
+            if (policy >= 2) {
+                expect(after.update.holdRemainingUs == 0,
+                       "above-target score changes must not restart the shrink timer");
+                expect(buffer.demand(12000) < demand,
+                       "above-target rising and falling scores must not pause shrinkage");
+            }
+        }
+        expect(sawFalling && sawRising && sawPressure,
+               "fixture must exercise both score directions and current pressure");
+        // Sustained attributable pressure eventually fails the long target.
+        bool sawBelowTarget = false;
+        for (int i = 0; i < 500; ++i) {
+            const auto demand = buffer.demand(12000);
+            observe(i % 2 ? 12000 : 8000);
+            const auto after = buffer.stats();
+            if (after.qualityPercent() < 99.5) {
+                sawBelowTarget = true;
+                expect(after.update.holdRemainingUs == 8000000,
+                       "below-target attributable pressure must restart the hold");
+                expect(buffer.demand(12000) >= demand,
+                       "below-target pressure must prevent shrinkage");
+            }
+        }
+        expect(sawBelowTarget, "fixture must cross below the 99.50% target");
+    }
+}
+
+void testIntervalBufferAboveTargetCapacityDipPreservesRecovery()
+{
+    for (const uint64_t policy : {uint64_t(2), uint64_t(3)}) {
+        Vrr13::IntervalBuffer buffer;
+        uint64_t at = 1000000, frame = 0;
+        for (int i = 0; i < 2000; ++i) {
+            at += 10000;
+            const bool overloaded = i % 300 == 299;
+            const auto previousHold = buffer.stats().update.holdRemainingUs;
+            buffer.observe({++frame, at, at, at, at, 5000, true, !overloaded,
+                            overloaded ? uint64_t(1200000) : uint64_t(0), 0},
+                           1000, 16000, 8000000, 250, true, 995000,
+                           500, 120000000, 500000, 32, 3, 2, policy);
+            expect(buffer.stats().qualityPercent() == 100.0,
+                   "capacity dips alone must not change the smoothness score");
+            if (policy == 3 && overloaded && i > 850) {
+                expect(buffer.stats().update.holdRemainingUs <= previousHold,
+                       "above-target capacity dips must not erase earned recovery");
+            }
+        }
+        expect(policy == 3 ? buffer.demand(5000) < 5000 : buffer.demand(5000) == 5000,
+               "above-target intermittent overload must allow recovery; captured revision 2 must retain its hold");
+    }
 }
 
 void testIntervalQualityUsesPresetHistory()
@@ -6399,6 +6479,8 @@ int main()
     testIntervalBufferRestoreHoldsRestoredTarget();
     testStartDelaySeedReplacesGenericStart();
     testIntervalBufferAboveTargetDipDoesNotEraseRecovery();
+    testIntervalBufferThresholdControlsShrinkage();
+    testIntervalBufferAboveTargetCapacityDipPreservesRecovery();
     testIntervalQualityUsesPresetHistory();
     testPresetIntervalTolerances();
     testMeanMissBuffer();

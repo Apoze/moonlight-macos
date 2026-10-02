@@ -6,7 +6,8 @@ It explains the implementation and the reasoning needed to investigate it;
 it does not establish that a particular deployed executable matches the source.
 
 Current source review baseline: `48999f16` plus the 2026-09-30 Reduce judder
-readiness-bound and interval-buffer attribution changes in this worktree. Deployment and live
+readiness-bound and interval-buffer attribution changes, plus the 2026-10-01
+above-target shrinkage correction in this worktree. Deployment and live
 smoothness must be verified separately from this source description.
 
 The first live Windows PyroWave retry negotiated H.264 because the common library
@@ -1141,7 +1142,7 @@ interval time over the same one-second window as interval pressure.
 Extra standing delay cannot make a pipeline whose serial work exceeds its slot
 process frames faster. The preset's long severity-weighted history remains part
 of quality reporting and attack qualification, while only recent current pressure
-renews the clean-time release hold. Old below-target score debt therefore no
+with a below-target long score renews the clean-time release hold. Old below-target score debt therefore no
 longer pins live delay after the recent disturbance ends; historical policies
 retain the former hold behavior.
 
@@ -1469,8 +1470,16 @@ source period is always the available slot. Old score debt alone cannot authoriz
 buffer growth, and work that cannot fit a slot cannot be repaired by adding
 standing delay.
 
-Current above-target loss renews the protection hold and clears fractional
-release credit. The long score still qualifies a future attack and remains the
+Current attributable pressure renews the protection hold and clears fractional
+release credit only while the preset-duration quality score is below its target.
+Production records `playout_hold_renew_below_target=3`: score changes in either
+direction at or above the target neither restart the hold nor pause qualified
+recovery or gradual release. An above-target capacity dip pauses earning
+recovery and release while service cannot fit, but preserves earned recovery
+instead of restarting the timer. Revision 2 retained that capacity-reset
+behavior; revision 3 removes it above target. Revision 1 avoided hold renewal above target but
+still paused recovery; revision 0 retains its earlier pressure-based hold.
+Captured values preserve historical behaviors for exact replay. The long score still qualifies a future attack and remains the
 reported preset-quality history, but an old below-target score does not renew the
 live release hold after recent pressure clears. Smooth requires ten clean
 seconds before release (increased from six after the latest gameplay report),

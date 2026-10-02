@@ -18,11 +18,15 @@ holds are 6 / 8 / 10 seconds and release speeds are 250 / 250 / 50 us per
 second. Their score histories are 1 / 2 / 5 minutes respectively. Growth
 requires below-target long-window quality, current pressure, fresh readiness-
 related interval error, and serial local work that fits the intended interval.
-Only current pressure renews the clean-time release hold; old score debt remains
+Only current pressure with a below-target score renews the clean-time release hold; old score debt remains
 useful for qualifying future growth but cannot pin the live delay by itself.
-While the long-window score still meets the target, current pressure only
-pauses release for that frame (`playout_hold_renew_below_target`); it restarts
-the hold once the score falls below target.
+While the long-window score meets the target, score changes in either direction
+allow qualified recovery and release to continue (`playout_hold_renew_below_target=3`).
+Above-target capacity dips pause recovery without erasing earned time;
+captured revision 2 retains its earlier capacity reset.
+Below-target attributable pressure restarts the hold. Captured revision 1 still
+pauses release above target without restarting the hold, and revision 0 retains
+its historical pressure-based hold.
 Preset allowances are 1/2/4 fitted source frames, additionally limited by
 the four-waiting-frame queue-capacity bound. Initial interval
 calibration needs at least 500 ms and 32 consecutive valid intervals. Growth
