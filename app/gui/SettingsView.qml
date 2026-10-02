@@ -1438,7 +1438,7 @@ Flickable {
                         width: parent.width
                         wrapMode: Text.Wrap
                         text: StreamingPreferences.vrrLatencyMode === StreamingPreferences.VLM_LOW_LATENCY ?
-                                  qsTr("Minimizes added delay. Uneven delivery can cause more stutter or skipped frames.") :
+                                  qsTr("Minimizes added delay and eases back after late frames. Sustained overload can still skip frames.") :
                               StreamingPreferences.vrrLatencyMode === StreamingPreferences.VLM_SMOOTH ?
                                   qsTr("Uses more padding and holds it longer for steadier motion, with more input delay.") :
                                   qsTr("Targets steadier motion with a moderate timing reserve and balanced input delay.")
@@ -1450,7 +1450,7 @@ Flickable {
                         text: StreamingPreferences.vrrLatencyMode === StreamingPreferences.VLM_SMOOTH ?
                                   qsTr("Buffer allowance: up to 4 source frames, limited by queue capacity. Actual learned delay may be lower.") :
                               StreamingPreferences.vrrLatencyMode === StreamingPreferences.VLM_LOW_LATENCY ?
-                                  qsTr("Buffer allowance: up to 1 source frame, limited by queue capacity. Actual learned delay may be lower.") :
+                                  qsTr("Buffer allowance: up to 1/2 source frame, limited by queue capacity. Actual learned delay may be lower.") :
                                   qsTr("Buffer allowance: up to 2 source frames, limited by queue capacity. Actual learned delay may be lower.")
                     }
 

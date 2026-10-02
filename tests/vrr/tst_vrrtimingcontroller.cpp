@@ -40,6 +40,7 @@ VrrTimingParameters legacyPlayoutParameters(const VrrSessionConfig& session)
 {
     auto policy = vrrTimingParametersForSession(session);
     policy.playoutCatchupPerMille = 0;
+    policy.playoutLateRecovery = 0;
     policy.playoutOffsetCadenceGate = 0;
     policy.playoutOffsetSlewUsPerSecond = 0;
     policy.playoutResponsiveBuffer = 0;
@@ -81,6 +82,7 @@ VrrTimingParameters legacyFeedbackParameters(const VrrSessionConfig& session)
 {
     auto policy = vrrTimingParametersForSession(session);
     policy.playoutCatchupPerMille = 0;
+    policy.playoutLateRecovery = 0;
     policy.playoutOffsetCadenceGate = 0;
     policy.playoutOffsetSlewUsPerSecond = 0;
     policy.playoutResponsiveBuffer = 0;
@@ -2895,6 +2897,8 @@ void testTearingPresentClearsLatchedFlip()
         auto session = config(116, 120);
         auto policy = vrrTimingParametersForSession(session);
         policy.latchedFlipAnchor = anchor;
+        // Isolate the historical flip-anchor defect from newer late recovery.
+        policy.playoutLateRecovery = 0;
         policy.playoutPerFrameLatch = perFrameLatch;
         VrrTimingController controller(session, true, policy);
         uint64_t flipUs = 0, violations = 0, adaptive = 0;
@@ -3177,6 +3181,8 @@ void testPerFrameLatchIncludesSafetyHeadroom()
             session.smoothFrameTiming = false;
             auto policy = vrrTimingParametersForSession(session);
             policy.playoutPerFrameLatch = 2; // Preserve historical vrr17 replay.
+            policy.playoutLateRecovery = 0;
+            policy.playoutCatchupPerMille = 0;
             // A shadow schedule supplies the uncompressed source slots. No
             // preparation observations means both controllers retain the same
             // render budget and buffer; only submitted spacing differs.
@@ -4811,7 +4817,7 @@ void testLatencyPresetsAcrossSourceAndDisplayRates()
             auto session = ordinarySession;
             session.latencyMode = mode;
             const auto policy = vrrTimingParametersForSession(session);
-            const uint64_t capPerMille = mode == 2 ? 1000 : 2000;
+            const uint64_t capPerMille = mode == 2 ? 500 : 2000;
             expect(policy.latencyFixEnabled == 1 && policy.latencyFixAllRates == 1 &&
                        policy.latencyFixDelayPeriodPerMille == (mode == 1 ? 500 : 0) &&
                        policy.playoutDelayCapSourcePeriodPerMille == capPerMille,
@@ -5167,6 +5173,13 @@ LowRateSmoothingResult runLowRateSmoothingFixture(int mode, bool bounded,
     auto policy = vrrTimingParametersForSession(session);
     policy.playoutSmoothingReadinessBound = bounded && smoothing ? 1 : 0;
     policy.playoutDelayStartSeedUs = 8000;
+    // This readiness-attribution fixture requires the historical 8 ms seed
+    // even before the slow scene. Production Low Latency now caps that initial
+    // 120 FPS scene at half a frame; preset-cap coverage is separate.
+    if (mode == 2) {
+        policy.playoutDelayMaximumPeriodPerMille = 1000;
+        policy.playoutDelayCapSourcePeriodPerMille = 1000;
+    }
     // Isolate attacks from the preset's independent release rate. All three
     // profiles begin the slow scene with 8 ms and, in the on-time case, keep
     // 4 ms of readiness slack before the raw deadline.
@@ -6516,6 +6529,7 @@ void testProductionGradualBacklogRecovery()
     auto policy = vrrTimingParametersForSession(session);
     auto historical = policy;
     historical.playoutCatchupPerMille = 0;
+    historical.playoutLateRecovery = 0;
     VrrTimingController current(session, true, policy), old(session, true, historical);
     uint64_t submitted = 0, oldSubmitted = 0;
     bool differed = false;
@@ -6545,8 +6559,58 @@ void testProductionGradualBacklogRecovery()
     expect(differed, "the production worker schedule must exercise gradual recovery after a stall");
 }
 
+void testLateFrameRecoveryWithoutQueueBacklog()
+{
+    for (int rate : {40, 60, 100, 116}) for (int mode : {0, 1, 2})
+    for (bool smooth : {false, true}) for (bool canLatch : {false, true}) {
+        auto session = config(rate, 120);
+        session.latencyMode = mode;
+        session.smoothFrameTiming = smooth;
+        auto policy = vrrTimingParametersForSession(session);
+        expect(policy.playoutLateRecovery == 1 && policy.playoutCatchupPerMille == 20,
+               "late recovery must work independently of Reduce judder and timing preset");
+        // Isolate recovery from adaptive buffer growth. Both controllers get
+        // the same fixed 1 ms buffer and identical source/readiness samples.
+        policy.playoutDelayAdaptive = 0;
+        policy.sourcePlayoutDelayUs = 1000;
+        auto historical = policy;
+        historical.playoutLateRecovery = 0;
+        historical.playoutCatchupPerMille = smooth ? 20 : 0;
+        VrrTimingController current(session, canLatch, policy);
+        VrrTimingController old(session, canLatch, historical);
+        uint64_t last = 0, oldLast = 0;
+        bool rescued = false;
+        for (int i = 1; i <= 360; ++i) {
+            const auto rtp = uint32_t(std::llround(i * 90000.0 / rate));
+            const uint64_t arrival = decodedTimeForRtp(1000000, rtp);
+            const auto a = current.schedule(frame(i, rtp, true, arrival), std::max(arrival, last));
+            const auto b = old.schedule(frame(i, rtp, true, arrival), std::max(arrival, oldLast));
+            expect(a.originalTargetUs == b.originalTargetUs,
+                   "late rescue must preserve source clock and intended targets");
+            expect(a.targetUs >= current.earliestSubmissionUs(),
+                   "recovery must retain the active native presentation safety floor");
+            if (i == 201) {
+                rescued = a.targetUs > b.targetUs;
+                expect(a.targetUs - last >= a.sourcePeriodUs * 97 / 100,
+                       "a 3 ms late presentation must not be followed by a sharp catch-up interval");
+            }
+            expect(a.targetUs <= std::max(a.originalTargetUs,
+                       std::max(arrival, last) + a.renderLeadUs) + a.sourcePeriodUs,
+                   "recovery must not accumulate unbounded target latency");
+            last = a.targetUs + (i == 200 ? 3000 : 0);
+            oldLast = b.targetUs + (i == 200 ? 3000 : 0);
+            current.noteSubmission(true, false, last);
+            old.noteSubmission(true, false, oldLast);
+            if (i == 360) expect(last <= oldLast + 100,
+                "isolated late-frame recovery must return to the original timeline");
+        }
+        expect(rescued, "a late present without old queued work must activate bounded recovery");
+    }
+}
+
 int main()
 {
+    testLateFrameRecoveryWithoutQueueBacklog();
     testProductionGradualBacklogRecovery();
     {
         expect(VrrCatchUp::floorUs(100000, 10000, 8500, 0, 20) == 109800,

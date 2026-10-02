@@ -5,7 +5,8 @@ of a session working on streaming, decoding, rendering, VRR, latency, or replay.
 It explains the implementation and the reasoning needed to investigate it;
 it does not establish that a particular deployed executable matches the source.
 
-Current source review baseline: `48999f16` plus the 2026-09-30 Reduce judder
+Current source review baseline: `5c35190a` plus bounded late-frame recovery
+and the half-source-frame Low Latency allowance (2026-10-01), plus the 2026-09-30 Reduce judder
 readiness-bound and interval-buffer attribution changes, plus the 2026-10-01
 above-target shrinkage correction and per-interval excess scoring in this
 worktree. Deployment and live
@@ -721,7 +722,7 @@ Latency and Balanced Target, 0.2 ms for Smooth), driving the severity-weighted
 preset-duration quality score. Low Latency / Balanced Target / Smooth seek
 99% / 99.5% / 99.99% over 1/2/5 minutes, with 6/8/10-second holds and
 250/250/50 us-per-second release, within the shared four-waiting-frame queue and
-1/2/4-source-frame allowances. Fixed 16/24 ms profile ceilings were removed;
+0.5/2/4-source-frame allowances. Fixed 16/24 ms profile ceilings were removed;
 all modes remain subject to the queue-capacity safety bound. These
 are ceilings, not fixed delays or a larger physical queue.
 Initial interval calibration requires at least 500 ms of contiguous coverage
@@ -1078,22 +1079,57 @@ suites, exact replay of a new capture and a matched high-bitrate live test.
 
 ### Client warnings and gradual backlog recovery (2026-09-20)
 
-With Reduce judder enabled, production captures `playout_catchup_per_mille=20`.
-Recovery arms only after replaceable queue age exceeds one source period.
-A soft submission floor limits catch-up initially to a two-percent reduction
-in source interval. Between one and two source periods of replaceable queue
-age, it continuously allows more recovery, up to the display period plus guard.
-There is no extra floor without display headroom. The existing native
-protection decision is retained, including any latched present. Each added
-hold is bounded by the two-period stale deadline and at most 1 ms beyond the
-otherwise safe slot. Persistent stalls cannot authorize an unlimited slow drain. Source timestamps, dynamic reserve demand and
-hard queue capacity are unchanged. The decode wait is excluded from replaceable
-queue age; existing stale-frame rejection remains the last safeguard. Cadence
-breaks, rate transitions and unqualified source timing bypass this floor.
-The recovery parameter is included in the calibration identity. Zero preserves historical
-capture behavior; Reduce judder disabled also retains the former recovery.
-This smooths compression after stalls, but cannot guarantee preservation of every
-frame under overload, eliminate GPU waits, or prove physical scanout smoothness.
+Production captures `playout_late_recovery=1` and
+`playout_catchup_per_mille=20`, independently of Reduce judder. Recovery arms
+when a successfully submitted frame exceeds its original target by more than
+500 us, or replaceable queue age exceeds one source period. This also covers
+preparation/submission stalls that happen after scheduling without queued
+backlog. Failed/cancelled presentations do not arm recovery. Qualified source
+intervals within 10 percent of the fitted period are required; cadence breaks,
+rate transitions and unqualified timing bypass the floor.
+
+A soft submission floor initially limits catch-up to a two-percent reduction
+in source interval. Replaceable queue pressure progressively permits faster
+recovery up to the display period plus guard. Intentional playout delay is
+subtracted from that pressure. With no display headroom, the soft floor is
+inactive and existing native protection still applies. Recovery never changes
+the present mode or removes a latched request. Each additional hold is bounded
+by both `max(2 source periods, applied buffer + 1 source period)` of frame age
+(excluding its explicit decode wait) and `min(4 ms, half a source period)`
+beyond the otherwise safe target. This is temporary recovery time, separate
+from the half-frame Low Latency adaptive-buffer cap and the independently
+selected Reduce judder retiming budget. The original source targets remain
+anchored so an isolated late frame does not permanently move the timeline.
+
+New sessions no longer discard a frame merely because the presentation floor
+pushes it more than half a source period. Queue capacity, early queue expiry,
+and pre-render age rejection still shed sustained overload when a successor
+exists; a lone late frame and completed offscreen work remain protected.
+The worker and queue simulator select this rule through the recorded recovery
+parameter. The simulator still cannot model early queue pruning or changed
+GPU/decode service, so it is not live-throughput proof.
+
+Historical snapshots default `playout_late_recovery` to zero, retaining
+queue-age-only arming, the old 1 ms catch-up hold, and floor-debt rejection.
+The new parameter and preset buffer ratio are included in calibration identity.
+No application repeats, VRR enable/disable transitions, swapchain mode changes,
+or physical OLED flicker correction are introduced. This can reduce avoidable
+submission-interval compression; physical refresh behavior and brightness
+stability require a fresh live display test.
+
+Validation on the Linux native build: ten deterministic suites and replay help
+pass; single-frame, warm-history, decode-contention, and early-expiry worker
+fixtures pass exact replay. The 15 scenarios in
+`tests/vrr/configs/late-frame-recovery-stress.json` cover all presets with
+nominal, decision, preparation, submission, and scheduler faults on the 60 FPS
+warm fixture; all pass interval safety and 30 ms p99 latency bounds without
+saturation. Application build and offscreen help pass. The latest completed
+`20261001-222806-2037694` capture has valid sequence accounting but fails the
+strict exact gate, so its policy comparison is exploratory only: half-frame
+recovery improves interval jerk versus half-frame buffering alone, while the
+previous one-frame buffer remains more even. No native Windows deployment,
+live gameplay smoothness, or optical flicker result is established. Detailed
+checks and capture identity are in `build/late-frame-recovery/validation.json`.
 
 Client warnings sample fresh pacing drops/late-preparation counters once per
 reporting interval, independently of the performance overlay. A buffer at its
@@ -1686,7 +1722,7 @@ spacing, but cannot model a change of native backend or prove a visual remedy.
 A fresh gameplay capture is required for that comparison.
 
 Current VRR timing choices (introduced after `20fa2bc4`, allowances updated
-2026-09-18): the `VRR timing`
+2026-10-01): the `VRR timing`
 selector offers Low Latency, Balanced Target, and Smooth throughout the VRR
 frame-rate range. `vrrlatencymode` persists IDs 2, 1, and 0 respectively.
 Balanced Target is the new-user default. A saved mode takes precedence;
@@ -1697,11 +1733,11 @@ reconnect after changing it. Fixed-refresh pacing is independent of this setting
 
 | Timing choice | Adaptive playout-buffer cap | Stale-work allowance with a successor |
 | --- | --- | --- |
-| Low Latency (2) | One fitted source period | At least two periods; protected by applied delay |
+| Low Latency (2) | Half a fitted source period | At least two periods; protected by applied delay |
 | Balanced Target (1, default) | Two fitted source periods | At least two periods; protected by applied delay |
 | Smooth (0) | Four fitted source periods | At least two periods; protected by applied delay |
 
-Production sets `playout_delay_maximum_period_per_mille=1000/2000/4000`
+Production sets `playout_delay_maximum_period_per_mille=500/2000/4000`
 for Low Latency/Balanced/Smooth. The separate four-slot queue safety bound
 uses the smaller of fitted and negotiated source periods, so a slower source
 can still be clipped below its nominal profile allowance. Queue-only and
@@ -1726,7 +1762,7 @@ profile allowance, but the queue bound still uses the negotiated period and
 may prevent an increase in effective buffer maximum. The zero default retains the configured
 stream-rate cap for historical replay. `VrrSessionConfig::latencyMode` resolves
 the buffer cap into the trace/replay parameter
-`playout_delay_cap_source_period_per_mille`: 1000 for Low Latency, 2000 for
+`playout_delay_cap_source_period_per_mille`: 500 for Low Latency, 2000 for
 Balanced Target, and 4000 for Smooth. Earlier captures retain their recorded
 ratios (including vrr17's 500/1000/3000). A zero schema default means an older
 capture has no source-relative cap and retains its recorded behavior. The
@@ -2155,7 +2191,7 @@ contract; it does not replace network assembly or codec reference handling.
 The VRR queue admits four waiting frames plus one active frame in every
 profile (`playout_queue_frames`; Smooth alone until 2026-09-26, and 0 = the
 historical three in older captures). Separately, profile playout-delay
-allowances are one, two, or four fitted source frames for Low Latency, Balanced
+allowances are half, two, or four fitted source frames for Low Latency, Balanced
 Target, or Smooth. The queue limit in `playoutQueueLimitUs()` remains a safety
 bound on those allowances:
 waiting frames x period, minus render lead and the full Reduce judder retiming
@@ -2177,7 +2213,8 @@ reject frames; a full queue evicts the oldest waiting frame, marks a discontinui
 and admits the new frame. Trace/counter work occurs outside the queue lock.
 
 The worker also sheds stale work when a fresher queued successor exists and
-age/backlog/missed-tick criteria apply. All non-metronome profiles use a
+age/capacity criteria apply (historical snapshots also retain floor-debt
+and missed-tick rejection). All non-metronome profiles use a
 two-source-period age allowance. Balanced Target and Low Latency measure it from
 pacer admission, while Smooth uses the scheduled target for its second
 check. A lone late frame may still be shown.
@@ -2380,9 +2417,9 @@ It also sets `latchedFloorDisabled=1` and disables the extra queue-mode budget.
 | --- | --- |
 | Delay start seed | 6,000 us, then source/display/work/capacity scaling below |
 | Delay minimum input | 1,000 us, capped by available capacity and the selected timing allowance |
-| Delay maximum input | 1,000 us fixed floor plus 1/2/4 fitted source periods for Low Latency/Balanced/Smooth; also capped by queue capacity |
+| Delay maximum input | 1,000 us fixed floor plus 0.5/2/4 fitted source periods for Low Latency/Balanced/Smooth; also capped by queue capacity |
 | Start-period ratio | 950 per mille of fitted source period |
-| Maximum-period ratio | 1000/2000/4000 per mille for Low Latency/Balanced/Smooth |
+| Maximum-period ratio | 500/2000/4000 per mille for Low Latency/Balanced/Smooth |
 | Initial interval calibration | At least 500 ms and 32 consecutive valid intervals; once per controller reset, not once per FPS change |
 | Interval requalification after a break | One second and at least two valid intervals, after initial calibration has completed |
 | Production source mapping | Decode completion (`playout_source_mapping_decoder_output=0`); absorbs hardware decode duration into the timeline offset |
@@ -2511,7 +2548,8 @@ presentation floors still constrain the schedule. Smoothing does not add a
 queued-frame allowance. Its readiness calibration key gains
 `|frame-smoothing=150-25-6000|cadence=2-0|catchup=20|smoothing-reserve=3000-500-980-500|period-feedback=20000`
 so profiles from earlier smoothing policies cannot cross-seed it.
-Unchecked sessions keep their existing calibration identity. Historical traces
+All new sessions also append the late-recovery revision and preset buffer
+ratio to their calibration identity. Historical traces
 retain their recorded parameters and need no schema change.
 
 The initial moderate policy was selected by exploratory replay of the completed
@@ -2863,8 +2901,8 @@ occupied        = renderLead + presentationSafety
 queueDelayLimit = max(0, capacity - occupied)
 modeAllowance   = Smooth: fittedSourcePeriod * 4000 / 1000
                 | Balanced Target: fittedSourcePeriod * 2000 / 1000
-                | Low Latency: fittedSourcePeriod * 1000 / 1000
-maximumInput    = max(1000 us, selected 1/2/4 fitted source-period allowance)
+                | Low Latency: fittedSourcePeriod * 500 / 1000
+maximumInput    = max(1000 us, selected 0.5/2/4 fitted source-period allowance)
 effectiveMin    = min(1000 us, queueDelayLimit, modeAllowance)
 effectiveMax    = min(maximumInput, queueDelayLimit, modeAllowance)
 ```

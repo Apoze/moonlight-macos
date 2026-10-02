@@ -523,7 +523,8 @@ int VrrPacingWorker::run()
         // queue admission/expiry bounded, but present the active ready image.
         if (!preparedAhead && hasQueuedFrame() && VrrFrameDropPolicy::beforeRender(
                 decision, m_TimingController->displayPeriodUs(), ageUs, metronome,
-                latencyFix, protectedDelayUs)) {
+                latencyFix, protectedDelayUs,
+                m_TimingController->parameters().playoutLateRecovery != 0)) {
             recordFrameCompletion(queuedFrame, decision, VrrPresentFeedback {}, telemetry,
                        TraceDisposition::Stale);
             noteDrop();

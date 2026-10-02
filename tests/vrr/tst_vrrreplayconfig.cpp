@@ -305,6 +305,15 @@ void VrrReplayConfigTest::offsetRecoveryPolicyRoundTrip()
     QCOMPARE(restored.playoutSerialServiceGate, uint64_t(2));
     QCOMPARE(restored.playoutRecentPressureRelease, uint64_t(3));
     QCOMPARE(restored.playoutHoldRenewBelowTarget, uint64_t(3));
+    QCOMPARE(restored.playoutLateRecovery, uint64_t(1));
+    QCOMPARE(restored.playoutCatchupPerMille, uint64_t(20));
+    QVERIFY(vrrReplayParameterNames().contains("controller.playout_late_recovery"));
+    auto invalidRecovery = restored;
+    invalidRecovery.playoutLateRecovery = 2;
+    QVERIFY(!validateVrrTimingParameters(invalidRecovery, error));
+    invalidRecovery = restored;
+    invalidRecovery.playoutCatchupPerMille = 0;
+    QVERIFY(!validateVrrTimingParameters(invalidRecovery, error));
     QVERIFY(vrrReplayParameterNames().contains("controller.playout_offset_cadence_gate"));
     QVERIFY(vrrReplayParameterNames().contains("controller.playout_offset_slew_us_per_second"));
     QVERIFY(vrrReplayParameterNames().contains("controller.playout_offset_source_clock"));
@@ -326,6 +335,7 @@ void VrrReplayConfigTest::offsetRecoveryPolicyRoundTrip()
     oldSnapshot.remove("playout_recent_pressure_release");
     oldSnapshot.remove("playout_hold_renew_below_target");
     oldSnapshot.remove("playout_catchup_per_mille");
+    oldSnapshot.remove("playout_late_recovery");
     VrrTimingParameters historical;
     QVERIFY2(applyVrrReplayControllerSnapshot(oldSnapshot, historical, error), qPrintable(error));
     QCOMPARE(historical.playoutOffsetCadenceGate, uint64_t(0));
@@ -337,6 +347,7 @@ void VrrReplayConfigTest::offsetRecoveryPolicyRoundTrip()
     QCOMPARE(historical.playoutRecentPressureRelease, uint64_t(0));
     QCOMPARE(historical.playoutHoldRenewBelowTarget, uint64_t(0));
     QCOMPARE(historical.playoutCatchupPerMille, uint64_t(0));
+    QCOMPARE(historical.playoutLateRecovery, uint64_t(0));
 
     auto revisionOneSnapshot = snapshot;
     revisionOneSnapshot["playout_serial_service_gate"] = 1;

@@ -728,6 +728,17 @@ void testLatencyFixDropBoundaries()
            "active latency fix may shed material floor debt below exact refresh");
     expect(!VrrFrameDropPolicy::beforeRender(decision, 8333, 0, false, false),
            "ordinary below-refresh playback must keep its natural debt recovery");
+    for (bool latencyFix : {false, true}) {
+        expect(!VrrFrameDropPolicy::beforeRender(decision, 8333, 18000,
+                   false, latencyFix, 4500, true),
+               "late rescue must retain a display-floor-delayed frame within the queue-age bound");
+        expect(VrrFrameDropPolicy::beforeRender(decision, 8333, 18001,
+                   false, latencyFix, 4500, true),
+               "late rescue must still shed actual backlog beyond two source periods");
+    }
+    expect(!VrrFrameDropPolicy::beforeRender(decision, 10000, 9000,
+               false, true, 4500, true),
+           "near-refresh rescue must not mistake display spacing alone for stale work");
 
     decision.sourcePeriodUs = std::numeric_limits<uint64_t>::max();
     expect(VrrFrameDropPolicy::maximumAgeUs(decision, false, false) ==

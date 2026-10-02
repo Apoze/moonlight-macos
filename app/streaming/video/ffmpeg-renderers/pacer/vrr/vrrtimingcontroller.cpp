@@ -21,7 +21,7 @@ constexpr uint64_t kPlayoutStartUs = 6000;
 constexpr uint64_t kPlayoutMinimumUs = 1000;
 constexpr uint64_t kPlayoutMaximumUs = 8000;
 // Profile buffer allowances are measured in fitted source frames, independent
-// of display refresh: one for Low Latency, two for Balanced, four for Smooth.
+// of display refresh: half for Low Latency, two for Balanced, four for Smooth.
 constexpr uint64_t kSmoothPlayoutCapSourcePeriodPerMille = 4000;
 // Every profile waits in the same four-frame queue and differs only in how
 // much of it its delay ceiling uses. With three frames, Balanced's 16 ms
@@ -177,7 +177,7 @@ VrrTimingParameters vrrTimingParametersForSession(
     parameters.latencyFixAllRates = latencyMode != 0 ? 1 : 0;
     parameters.latencyFixDelayPeriodPerMille = latencyMode == 2 ? 0 : 500;
     parameters.playoutDelayCapSourcePeriodPerMille = config.latencyFix ? 0 :
-        latencyMode == 2 ? 1000 : latencyMode == 1 ? 2000 :
+        latencyMode == 2 ? 500 : latencyMode == 1 ? 2000 :
         kSmoothPlayoutCapSourcePeriodPerMille;
     // The nominal 116 Hz period was shorter than the measured ~99 Hz source
     // in the deep capture, so it clipped the queue exactly when GPU stalls
@@ -186,7 +186,9 @@ VrrTimingParameters vrrTimingParametersForSession(
     parameters.playoutDelayCapUsesObservedPeriod = 1;
     parameters.playoutQueueFrames = kPlayoutQueueFrames;
     parameters.playoutCapacityTelemetry = 1;
-    parameters.playoutCatchupPerMille = config.smoothFrameTiming ? 20 : 0;
+    // Late-frame recovery is independent of optional source-cadence smoothing.
+    parameters.playoutCatchupPerMille = 20;
+    parameters.playoutLateRecovery = 1;
     parameters.playoutGpuReadinessAdaptation = 1;
     parameters.playoutPredictionOnly = 1;
     // Every normal VRR session uses the interval-quality queue. Historical
@@ -299,10 +301,10 @@ VrrTimingParameters vrrTimingParametersForSession(
     parameters.playoutMetronomeEnabled = 0;
     parameters.playoutDelayStartPeriodPerMille = kPlayoutStartPeriodPerMille;
     // The maximum and cap both express the selected total buffer in source
-    // frames: one for Low Latency, two for Balanced, four for Smooth. Use the
+    // frames: half for Low Latency, two for Balanced, four for Smooth. Use the
     // fitted source period, never the display refresh, for this allowance.
     parameters.playoutDelayMaximumPeriodPerMille =
-        latencyMode == 2 ? 1000 : latencyMode == 1 ? 2000 : 4000;
+        latencyMode == 2 ? 500 : latencyMode == 1 ? 2000 : 4000;
     parameters.playoutSmoothingSnapPerMille = kPlayoutMetronomeSnapPerMille;
     parameters.playoutOffsetReseedFrames = kPlayoutOffsetReseedFrames;
     parameters.playoutDelaySlewAcrossBands = 1;
@@ -993,17 +995,30 @@ VrrTimingDecision VrrTimingController::schedule(const PacedFrame& frame,
         m_SourcePeriodUs <= 1000000 && cadence.intervalUs >= m_SourcePeriodUs * 9 / 10 &&
         cadence.intervalUs <= m_SourcePeriodUs * 11 / 10;
     if (recoveryEligible && (m_CatchupActive || queueAge > m_SourcePeriodUs)) {
+        const bool lateRecovery = m_Parameters.playoutLateRecovery != 0;
+        // Intentional playout residence is not overload pressure. Rescue a
+        // late image without immediately accelerating its successors merely
+        // because the selected jitter buffer occupies more than one period.
+        const uint64_t pressureAge = lateRecovery ?
+            queueAge - std::min(queueAge, playoutDelayUs) : queueAge;
         const uint64_t floor = VrrCatchUp::floorUs(m_LastSubmissionUs, m_SourcePeriodUs,
-            saturatingAdd(m_DisplayPeriodUs, m_GuardUs), queueAge,
+            saturatingAdd(m_DisplayPeriodUs, m_GuardUs), pressureAge,
             m_Parameters.playoutCatchupPerMille);
+        const uint64_t horizon = lateRecovery ?
+            std::max(m_SourcePeriodUs * 2, saturatingAdd(playoutDelayUs, m_SourcePeriodUs)) :
+            m_SourcePeriodUs * 2;
         const uint64_t hardDeadline = saturatingAdd(frame.decoderOutputUs(),
-            saturatingAdd(m_SourcePeriodUs * 2, frame.decodeSyncWaitUs()));
+            saturatingAdd(horizon, frame.decodeSyncWaitUs()));
         m_CatchupActive = floor != 0 && (floor > targetUs || queueAge > m_SourcePeriodUs) &&
-            queueAge < m_SourcePeriodUs * 2 && targetUs < hardDeadline;
-        // Recovery may spend at most 1 ms beyond the otherwise safe slot.
-        // A slow drain must not turn repeated stalls into standing latency.
+            queueAge < horizon && targetUs < hardDeadline;
+        // Bound temporary recovery separately from the adaptive jitter buffer.
+        // The older 1 ms bound could still produce a sharp short interval
+        // immediately after a small render stall. Allow at most half a source
+        // period, capped at 4 ms, without moving the underlying source clock.
+        const uint64_t extraLimit = lateRecovery ?
+            std::min<uint64_t>(4000, m_SourcePeriodUs / 2) : 1000;
         if (m_CatchupActive) targetUs = std::max(targetUs,
-            std::min({floor, hardDeadline, saturatingAdd(targetUs, 1000)}));
+            std::min({floor, hardDeadline, saturatingAdd(targetUs, extraLimit)}));
     }
     else {
         m_CatchupActive = false;
@@ -2269,6 +2284,15 @@ void VrrTimingController::noteSubmission(bool submitted, bool cancelled,
     }
     const bool nativeLatch = m_NativeLatchPending;
     m_NativeLatchPending = false;
+    if (m_Parameters.playoutLateRecovery != 0) {
+        // Preparation/submission may miss a target after schedule() returned,
+        // with no old queued frames at all. Arm recovery from that actual
+        // result as well as from queue age. Small timer noise does not arm it;
+        // failed/cancelled work cannot establish a recovery anchor.
+        m_CatchupActive = submitted && !cancelled && m_Pending.intervalValid &&
+            (m_CatchupActive || submissionUs >
+                saturatingAdd(m_Pending.smoothness.intended, 500));
+    }
     if (submitted) {
         // Cancellation is a reason, not proof that nothing reached the native
         // presentation queue (Vulkan must submit some abandoned images).

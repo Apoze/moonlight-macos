@@ -328,6 +328,10 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps,
             // Preserve the historical V2 calibration identity now that its
             // queue policy is unconditional rather than a live preference.
             context += QStringLiteral("|mean-miss-queue-v2");
+            const auto recoveryPolicy = vrrTimingParametersForSession(config);
+            context += QStringLiteral("|late-recovery=%1|buffer-ratio=%2")
+                .arg(recoveryPolicy.playoutLateRecovery)
+                .arg(recoveryPolicy.playoutDelayMaximumPeriodPerMille);
             if (smoothVrrFrameTiming) {
                 // The saved flag previously selected timestamp-following
                 // playout too. Do not cross-seed its readiness calibration.
