@@ -45,6 +45,9 @@ unix:!macx:packagesExist(wayland-server sdl2) {
     SUBDIRS += waylandfeedback
 }
 
+preferences.file = $$PWD/preferences.pro
+SUBDIRS += preferences
+
 timingcontroller.file = $$PWD/timingcontroller.pro
 framelimitercapabilities.file = $$PWD/framelimitercapabilities.pro
 ratepolicy.file = $$PWD/ratepolicy.pro

@@ -21,16 +21,13 @@ constexpr uint64_t kPlayoutStartUs = 6000;
 constexpr uint64_t kPlayoutMinimumUs = 1000;
 constexpr uint64_t kPlayoutMaximumUs = 8000;
 // Profile buffer allowances are measured in fitted source frames, independent
-// of display refresh: half for Low Latency, two for Balanced, four for Smooth.
-constexpr uint64_t kSmoothPlayoutCapSourcePeriodPerMille = 4000;
+// of display refresh: half for Low Latency, one for Balanced, four for Smooth.
 // Every profile waits in the same four-frame queue and differs only in how
 // much of it its delay ceiling uses. With three frames, Balanced's 16 ms
 // ceiling filled the queue budget near 120 FPS, so capacity rather than the
 // profile clipped its delay.
 constexpr uint64_t kPlayoutQueueFrames = VrrLargestQueuedFrames;
-// Smooth's tighter cadence target is intentionally a separate policy value;
-// keep the historical default below unchanged for old captures and direct
-// IntervalBuffer callers.
+// Historical Smooth tolerance, used only when a capture has no explicit value.
 constexpr uint64_t kSmoothIntervalToleranceUs = 200;
 // The whole reservoir tail: the delay covers the largest lateness seen in
 // the last thousand admitted frames plus the margin, so a late present is
@@ -143,6 +140,9 @@ uint64_t intervalQualityWindowUs(const VrrTimingParameters& parameters)
 
 uint64_t intervalQualityToleranceUs(const VrrTimingParameters& parameters)
 {
+    if (parameters.playoutIntervalToleranceUs != 0) {
+        return parameters.playoutIntervalToleranceUs;
+    }
     // Revision 7 originally used the shared 500 us default. Identify only
     // the current Smooth tuple so existing revision-7 traces replay exactly;
     // explicit revision 8 retains its historical 250 us tolerance.
@@ -173,12 +173,14 @@ VrrTimingParameters vrrTimingParametersForSession(
     // own defaults for exact replay.
     const int latencyMode = config.latencyMode >= 0 && config.latencyMode <= 2 ?
         config.latencyMode : 1;
-    parameters.latencyFixEnabled = config.latencyFix || latencyMode != 0 ? 1 : 0;
-    parameters.latencyFixAllRates = latencyMode != 0 ? 1 : 0;
-    parameters.latencyFixDelayPeriodPerMille = latencyMode == 2 ? 0 : 500;
-    parameters.playoutDelayCapSourcePeriodPerMille = config.latencyFix ? 0 :
-        latencyMode == 2 ? 500 : latencyMode == 1 ? 2000 :
-        kSmoothPlayoutCapSourcePeriodPerMille;
+    const auto options = config.timingOptions.resolved(latencyMode);
+    parameters.playoutIntervalToleranceUs = options.toleranceUs;
+    // Presets change only the four user-visible values. Admission, release,
+    // and late-frame recovery use the same policy for every combination.
+    parameters.latencyFixEnabled = 1;
+    parameters.latencyFixAllRates = config.latencyFix ? 0 : 1;
+    parameters.latencyFixDelayPeriodPerMille = 500;
+    parameters.playoutDelayCapSourcePeriodPerMille = config.latencyFix ? 0 : options.bufferPerMille;
     // The nominal 116 Hz period was shorter than the measured ~99 Hz source
     // in the deep capture, so it clipped the queue exactly when GPU stalls
     // needed more room. New live sessions use the fitted source period;
@@ -211,12 +213,11 @@ VrrTimingParameters vrrTimingParametersForSession(
     parameters.playoutIntervalInitialMinimumSamples = 32;
     // Retain earned protection between bursts instead of repeatedly shedding
     // it and reacquiring it. Explicit captured values preserve older release.
-    parameters.playoutMeanMissHoldUs = latencyMode == 2 ? 6000000 : latencyMode == 1 ? 8000000 : 10000000;
+    parameters.playoutMeanMissHoldUs = 8000000;
     // Balanced's 250 us/s recovery is the measured latency/smoothness knee:
-    // faster recovery saved little additional latency and noticeably raised
-    // presented jerk. Profiles order every trade the same way, so Low Latency
-    // releases at least as fast as Balanced, and Smooth slowest.
-    parameters.playoutMeanMissReleaseUsPerSecond = latencyMode == 0 ? 50 : 250;
+    // faster recovery saved little additional latency and raised presented
+    // jerk. All custom settings use this shared release policy.
+    parameters.playoutMeanMissReleaseUsPerSecond = 250;
     // Above-target score changes neither renew the hold nor pause recovery.
     // Captured revisions 0/1/2 retain their historical pressure behavior.
     parameters.playoutHoldRenewBelowTarget = parameters.playoutResponsiveBuffer >= 7 ? 3 : 0;
@@ -224,10 +225,8 @@ VrrTimingParameters vrrTimingParametersForSession(
     // floor counts every late frame, including a decoder that has fallen
     // behind, and held Balanced at its ceiling after an ordinary startup
     // backlog. The parameter remains for captures that recorded it.
-    parameters.playoutOnTimeTargetPerMillion = latencyMode == 2 ? 990000 :
-        latencyMode == 1 ? 995000 : 999900;
-    parameters.playoutReadinessWindowUs = latencyMode == 2 ? 60000000 :
-        latencyMode == 1 ? 120000000 : 300000000;
+    parameters.playoutOnTimeTargetPerMillion = uint64_t(options.targetHundredths) * 100;
+    parameters.playoutReadinessWindowUs = uint64_t(options.historySeconds) * 1000000;
     parameters.playoutReadinessHitchThresholdUs = config.readinessHitchFeedback ? 2000 : 0;
     parameters.playoutNativeHitchAdaptation = 0;
     // Display observations remain diagnostics; the queue uses interval quality.
@@ -301,10 +300,10 @@ VrrTimingParameters vrrTimingParametersForSession(
     parameters.playoutMetronomeEnabled = 0;
     parameters.playoutDelayStartPeriodPerMille = kPlayoutStartPeriodPerMille;
     // The maximum and cap both express the selected total buffer in source
-    // frames: half for Low Latency, two for Balanced, four for Smooth. Use the
+    // frames: half for Low Latency, one for Balanced, four for Smooth. Use the
     // fitted source period, never the display refresh, for this allowance.
     parameters.playoutDelayMaximumPeriodPerMille =
-        latencyMode == 2 ? 500 : latencyMode == 1 ? 2000 : 4000;
+        options.bufferPerMille;
     parameters.playoutSmoothingSnapPerMille = kPlayoutMetronomeSnapPerMille;
     parameters.playoutOffsetReseedFrames = kPlayoutOffsetReseedFrames;
     parameters.playoutDelaySlewAcrossBands = 1;

@@ -35,10 +35,26 @@ VrrSessionConfig config(int streamRateHz = 60, int displayRefreshHz = 120)
     return value;
 }
 
+// Explicit pre-customization policy for historical regression fixtures.
+VrrTimingParameters legacyPresetParameters(const VrrSessionConfig& session)
+{
+    auto policy = vrrTimingParametersForSession(session);
+    const int mode = session.latencyMode;
+    policy.playoutIntervalToleranceUs = 0;
+    policy.latencyFixEnabled = session.latencyFix || mode != 0;
+    policy.latencyFixAllRates = mode != 0;
+    policy.latencyFixDelayPeriodPerMille = mode == 2 ? 0 : 500;
+    policy.playoutDelayCapSourcePeriodPerMille = session.latencyFix ? 0 : mode == 2 ? 500 : mode == 1 ? 2000 : 4000;
+    policy.playoutDelayMaximumPeriodPerMille = mode == 2 ? 500 : mode == 1 ? 2000 : 4000;
+    policy.playoutMeanMissHoldUs = mode == 2 ? 6000000 : mode == 1 ? 8000000 : 10000000;
+    policy.playoutMeanMissReleaseUsPerSecond = mode == 0 ? 50 : 250;
+    return policy;
+}
+
 // Keep existing VRR13/metronome regression fixtures on their recorded policy.
 VrrTimingParameters legacyPlayoutParameters(const VrrSessionConfig& session)
 {
-    auto policy = vrrTimingParametersForSession(session);
+    auto policy = legacyPresetParameters(session);
     policy.playoutCatchupPerMille = 0;
     policy.playoutLateRecovery = 0;
     policy.playoutOffsetCadenceGate = 0;
@@ -80,7 +96,7 @@ VrrTimingParameters legacyPlayoutParameters(const VrrSessionConfig& session)
 // Historical display-feedback policies remain selectable for exact replay.
 VrrTimingParameters legacyFeedbackParameters(const VrrSessionConfig& session)
 {
-    auto policy = vrrTimingParametersForSession(session);
+    auto policy = legacyPresetParameters(session);
     policy.playoutCatchupPerMille = 0;
     policy.playoutLateRecovery = 0;
     policy.playoutOffsetCadenceGate = 0;
@@ -4588,8 +4604,8 @@ void testLatencyFixModeSelection()
         const auto ordinarySession = config(rate, 120);
         auto selectedSession = ordinarySession;
         selectedSession.latencyFix = true;
-        const auto ordinaryPolicy = vrrTimingParametersForSession(ordinarySession);
-        const auto selectedPolicy = vrrTimingParametersForSession(selectedSession);
+        const auto ordinaryPolicy = legacyPresetParameters(ordinarySession);
+        const auto selectedPolicy = legacyPresetParameters(selectedSession);
         expect(ordinaryPolicy.latencyFixEnabled == 0 &&
                    selectedPolicy.latencyFixEnabled == 1,
                "the snapshotted checkbox must resolve into the recorded controller parameters");
@@ -4646,7 +4662,7 @@ void testLatencyFixModeSelection()
         for (int rate : {boundary.enter - 1, boundary.enter, boundary.refresh}) {
             auto session = config(rate, boundary.refresh);
             session.latencyFix = true;
-            VrrTimingController controller(session, true, vrrTimingParametersForSession(session));
+            VrrTimingController controller(session, true, legacyPresetParameters(session));
             expect(controller.latencyFixActive() == (rate >= boundary.enter),
                    "near-ceiling entry must scale with refresh and include its cutoff");
             if (controller.latencyFixActive()) {
@@ -4807,8 +4823,8 @@ void testLatencyPresetsAcrossSourceAndDisplayRates()
                              Rates{120, 120}, Rates{60, 60}, Rates{120, 240}}) {
         const auto ordinarySession = config(rates.source, rates.display);
         const auto ordinaryPolicy = vrrTimingParametersForSession(ordinarySession);
-        expect(ordinaryPolicy.latencyFixEnabled == 0 &&
-                   ordinaryPolicy.latencyFixAllRates == 0 &&
+        expect(ordinaryPolicy.latencyFixEnabled == 1 &&
+                   ordinaryPolicy.latencyFixAllRates == 1 &&
                    ordinaryPolicy.playoutDelayCapSourcePeriodPerMille == 4000 &&
                    ordinaryPolicy.playoutDelayMaximumUs == ordinaryPolicy.playoutDelayMinimumUs &&
                    ordinaryPolicy.playoutDelayMaximumPeriodPerMille == 4000,
@@ -4817,9 +4833,9 @@ void testLatencyPresetsAcrossSourceAndDisplayRates()
             auto session = ordinarySession;
             session.latencyMode = mode;
             const auto policy = vrrTimingParametersForSession(session);
-            const uint64_t capPerMille = mode == 2 ? 500 : 2000;
+            const uint64_t capPerMille = mode == 2 ? 500 : 1000;
             expect(policy.latencyFixEnabled == 1 && policy.latencyFixAllRates == 1 &&
-                       policy.latencyFixDelayPeriodPerMille == (mode == 1 ? 500 : 0) &&
+                       policy.latencyFixDelayPeriodPerMille == 500 &&
                        policy.playoutDelayCapSourcePeriodPerMille == capPerMille,
                    "Balanced Target and Low Latency must resolve to replayable source-frame buffer caps");
             for (bool canLatch : {false, true}) {
@@ -4828,8 +4844,8 @@ void testLatencyPresetsAcrossSourceAndDisplayRates()
                 // Replay parameters, including an old disabled snapshot, win
                 // over the user's current preference.
                 VrrTimingController recorded(session, canLatch, ordinaryPolicy);
-                expect(selected.latencyFixActive() && !recorded.latencyFixActive(),
-                       "all-rate presets must activate at cold start without altering old snapshots");
+                expect(selected.latencyFixActive() && recorded.latencyFixActive(),
+                       "all presets must activate the shared all-rate policy at cold start");
                 for (int i = 0; i < 240; ++i) {
                     const auto rtp = uint32_t(std::llround(i * 90000.0 / rates.source));
                     const auto decoded = decodedTimeForRtp(1000000, rtp) +
@@ -4885,7 +4901,7 @@ void testLatencyPresetsBoundHitchesThroughCadenceChanges()
         selectedSession.latencyMode = mode;
         VrrTimingController ordinary(ordinarySession, true, vrrTimingParametersForSession(ordinarySession));
         VrrTimingController selected(selectedSession, true, vrrTimingParametersForSession(selectedSession));
-        const uint64_t capPerMille = 2000;
+        const uint64_t capPerMille = mode == 2 ? 500 : 1000;
         uint64_t ordinaryBeforeHitches = 0;
         uint64_t ordinaryMaximum = 0;
         double ticks = 0;
@@ -5688,6 +5704,72 @@ void testPresetReadinessTargets()
     }
 }
 
+void testCustomTimingOptions()
+{
+    const auto invalid = VrrTimingOptions{-1, 12000, 999, 9999}.resolved(1);
+    expect(invalid.bufferPerMille == 250 && invalid.targetHundredths == 9999 &&
+           invalid.historySeconds == 300 && invalid.toleranceUs == 2000,
+           "custom settings must clamp corrupt or excessive persisted values");
+    for (int mode : {0, 1, 2}) {
+        const auto migrated = VrrTimingOptions{}.resolved(mode);
+        const auto preset = VrrTimingOptions::preset(mode);
+        expect(migrated.bufferPerMille == preset.bufferPerMille &&
+               migrated.targetHundredths == preset.targetHundredths &&
+               migrated.historySeconds == preset.historySeconds &&
+               migrated.toleranceUs == preset.toleranceUs,
+               "missing saved values must migrate from the selected preset");
+    }
+    for (int tolerance = 250; tolerance <= 2000; tolerance += 250) {
+        auto session = config(120, 120);
+        session.timingOptions = {750, 9500, 30, tolerance};
+        const auto reference = vrrTimingParametersForSession(session);
+        for (int mode : {0, 1, 2}) {
+            session.latencyMode = mode;
+            const auto policy = vrrTimingParametersForSession(session);
+#define CHECK_SAME(type, json, member, defaultValue) \
+            expect(policy.member == reference.member, "preset name must not affect custom policy: " #member);
+            VRR_TIMING_PARAMETER_FIELDS(CHECK_SAME)
+#undef CHECK_SAME
+            expect(policy.playoutDelayMaximumPeriodPerMille == 750 &&
+                   policy.playoutDelayCapSourcePeriodPerMille == 750 &&
+                   policy.playoutOnTimeTargetPerMillion == 950000 &&
+                   policy.playoutReadinessWindowUs == 30000000,
+                   "all four custom values must reach the controller without preset overrides");
+            VrrTimingController controller(session, true, policy);
+            for (int i = 0; i < 240; ++i) {
+                const auto rtp = uint32_t(i * 750);
+                const auto decoded = decodedTimeForRtp(1000000, rtp) + (i % 23 == 0 ? 8000 : 0);
+                const auto now = std::max(decoded, controller.lastSubmissionUs());
+                const auto decision = controller.schedule(frame(i, rtp, true, decoded), now);
+                expect(decision.playoutDelayUs <= controller.sourcePeriodUs() * 750 / 1000 &&
+                       decision.targetUs >= now && decision.targetUs >= controller.earliestSubmissionUs(),
+                       "custom low targets and tolerances must retain the buffer cap and presentation safety");
+                controller.notePreparationDuration(1000);
+                controller.noteSubmission(true, false, decision.targetUs);
+                expect(controller.intervalStats().toleranceUs == uint64_t(tolerance),
+                       "the selected interval tolerance must reach the measured quality score");
+            }
+        }
+    }
+    for (int rate : {30, 60, 120, 240, 360}) {
+        auto session = config(rate, rate);
+        session.timingOptions = {250, 9000, 10, 2000};
+        VrrTimingController controller(session, true, vrrTimingParametersForSession(session));
+        for (int i = 0; i < 240; ++i) {
+            const auto rtp = uint32_t(std::llround(i * 90000.0 / rate));
+            const auto decoded = decodedTimeForRtp(1000000, rtp) + (i % 19 == 0 ? 3000 : 0);
+            const auto now = std::max(decoded, controller.lastSubmissionUs());
+            const auto decision = controller.schedule(frame(i, rtp, true, decoded), now);
+            expect(decision.playoutDelayUs <= controller.sourcePeriodUs() / 4 &&
+                   decision.targetUs >= now && decision.targetUs >= controller.earliestSubmissionUs(),
+                   "quarter-frame custom allowance must retain its cap and native spacing from 30 to 360 FPS");
+            controller.notePreparationDuration(250);
+            controller.noteSubmission(true, false, decision.targetUs);
+        }
+    }
+
+}
+
 void testPresetIntervalTolerances()
 {
     for (int mode : {0, 1, 2}) {
@@ -5700,9 +5782,9 @@ void testPresetIntervalTolerances()
         controller.notePreparationDuration(1000, 0, 101000);
         controller.noteSubmission(true, false, decision.targetUs);
 
-        const uint64_t expected = mode == 0 ? 200 : 500;
+        const uint64_t expected = mode == 0 ? 250 : 500;
         expect(controller.intervalStats().toleranceUs == expected,
-               "Smooth must use 0.2 ms interval tolerance while other presets use 0.5 ms");
+               "Smooth must use 0.25 ms interval tolerance while other presets use 0.5 ms");
     }
 }
 
@@ -5788,8 +5870,8 @@ void testMeanMissBuffer()
             policy.playoutSerialServiceGate == 2 &&
             policy.playoutRecentPressureRelease == 3 &&
             policy.playoutHoldRenewBelowTarget == 3 &&
-            policy.playoutMeanMissHoldUs == (mode == 2 ? 6000000 : mode == 1 ? 8000000 : 10000000) &&
-            policy.playoutMeanMissReleaseUsPerSecond == (mode == 0 ? 50 : 250),
+            policy.playoutMeanMissHoldUs == 8000000 &&
+            policy.playoutMeanMissReleaseUsPerSecond == 250,
             "every preset must select the production interval queue and record its release policy");
     }
 }
@@ -6658,6 +6740,7 @@ int main()
     testIntervalBufferAboveTargetCapacityDipPreservesRecovery();
     testIntervalQualityUsesPresetHistory();
     testPresetIntervalTolerances();
+    testCustomTimingOptions();
     testMeanMissBuffer();
     testThresholdedReadinessGrowth();
     testPresetReadinessTargets();

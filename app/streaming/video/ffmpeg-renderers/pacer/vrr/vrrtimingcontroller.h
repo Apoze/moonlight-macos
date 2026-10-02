@@ -47,6 +47,7 @@
     X(uint64_t, playout_catchup_per_mille, playoutCatchupPerMille, 0) \
     /* Rescue bounded late frames and recover from actual submission lateness. */ \
     X(uint64_t, playout_late_recovery, playoutLateRecovery, 0) \
+    X(uint64_t, playout_interval_tolerance_us, playoutIntervalToleranceUs, 0) \
     /* Historical captures retain the one-second/two-interval warmup. */ \
     X(uint64_t, playout_interval_initial_warmup_us, playoutIntervalInitialWarmupUs, 1000000) \
     X(size_t, playout_interval_initial_minimum_samples, playoutIntervalInitialMinimumSamples, 2) \

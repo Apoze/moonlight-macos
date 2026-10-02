@@ -2297,6 +2297,8 @@ void testDeepTraceRequestsNativeObservationsWithoutChangingMode()
     TrackedFrameLifetime first;
 
     auto cachedConfig = enabledConfig();
+    // Exercise a combination that cannot be reconstructed from a preset name.
+    cachedConfig.timingOptions = {750, 9725, 30, 1500};
     cachedConfig.calibrationPath = traceDirectory.filePath("profile.json").toStdString();
     cachedConfig.calibrationKey = "replay-test";
     Vrr13::Reserve cachedHistory(20);
@@ -2338,6 +2340,11 @@ void testDeepTraceRequestsNativeObservationsWithoutChangingMode()
                fields.value(columns.indexOf("history_version")) == "20" &&
                fields.value(columns.indexOf("history_state_valid")) == "1",
            "capture must identify the active preset and loaded calibration independently of native present results");
+    expect(fields.value(columns.indexOf("param_playout_delay_maximum_period_per_mille")) == "750" &&
+           fields.value(columns.indexOf("param_playout_on_time_target_per_million")) == "972500" &&
+           fields.value(columns.indexOf("param_playout_readiness_window_us")) == "30000000" &&
+           fields.value(columns.indexOf("param_playout_interval_tolerance_us")) == "1500",
+           "capture must record the actual custom settings rather than the preset defaults");
     expect(columns.contains("presentation_uncertainty_us") &&
            fields.value(columns.indexOf("presentation_uncertainty_us")) == "0",
            "trace must preserve non-DXGI clock uncertainty, defaulting to zero for legacy presenters");

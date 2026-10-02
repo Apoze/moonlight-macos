@@ -246,6 +246,7 @@ HEADERS += \
     cli/quitstream.h \
     cli/startstream.h \
     settings/streamingpreferences.h \
+    settings/vrrtimingoptions.h \
     diagnostics/diagnosticcapture.h \
     diagnostics/gputrace.h \
     diagnostics/diagnosticzip.h \

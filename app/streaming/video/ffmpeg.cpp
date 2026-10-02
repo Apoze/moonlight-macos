@@ -632,7 +632,7 @@ bool FFmpegVideoDecoder::completeInitialization(const AVCodec* decoder, enum AVP
     m_OriginalVideoHeight = params->height;
     m_StreamFps = params->frameRate;
     m_VideoFormat = params->videoFormat;
-    m_VrrLatencyMode = params->vrrLatencyMode;
+    m_VrrUsesMaximumBuffer = params->vrrTimingOptions.resolved(params->vrrLatencyMode).bufferPerMille >= 4000;
     m_CurrentTestMode = testMode;
 
     // Don't bother initializing Pacer if we're not actually going to render
@@ -649,7 +649,7 @@ bool FFmpegVideoDecoder::completeInitialization(const AVCodec* decoder, enum AVP
                                      .arg(params->width).arg(params->height).arg(params->videoFormat)
                                      .arg(m_FrontendRenderer->getCalibrationIdentity())
                                      .arg(decoder != nullptr ? decoder->name : "pyrowave"),
-                                 params->vrrLatencyMode)) {
+                                 params->vrrLatencyMode, params->vrrTimingOptions)) {
             return false;
         }
     }
@@ -1184,7 +1184,7 @@ void FFmpegVideoDecoder::syncPacerTelemetry()
         interval.qualityPercent());
     Session::get()->getOverlayManager().setStatusMessage(Overlay::StatusSource::ClientPacing,
         ClientPacingWarning::message(warning, (m_VideoFormat & VIDEO_FORMAT_MASK_AV1) != 0,
-            Session::get()->hevcPacingAlternative(), m_VrrLatencyMode == 0));
+            Session::get()->hevcPacingAlternative(), m_VrrUsesMaximumBuffer));
     m_LastPacerTelemetry = snapshot;
 }
 

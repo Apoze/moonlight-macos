@@ -12,6 +12,7 @@ class VrrReplayConfigTest : public QObject
 
 private slots:
     void defaultsRoundTrip();
+    void customToleranceRoundTrip();
     void initialCalibrationPolicyRoundTrip();
     void windowedSmoothingPolicyRoundTrip();
     void judderReservePolicyRoundTrip();
@@ -149,6 +150,30 @@ void VrrReplayConfigTest::judderReservePolicyRoundTrip()
     QCOMPARE(disabled.playoutSmoothingReserveMaxUs, uint64_t(0));
     QCOMPARE(disabled.playoutSmoothingPeriodFeedbackPerMillion, uint64_t(0));
     QCOMPARE(disabled.playoutSmoothingReadinessBound, uint64_t(0));
+}
+
+void VrrReplayConfigTest::customToleranceRoundTrip()
+{
+    VrrTimingParameters policy;
+    QString error;
+    QCOMPARE(policy.playoutIntervalToleranceUs, uint64_t(0));
+    for (int tolerance = 250; tolerance <= 2000; tolerance += 250) {
+        QVERIFY2(applyVrrReplayControllerSnapshot(
+            {{"playout_interval_tolerance_us", tolerance}}, policy, error), qPrintable(error));
+        VrrTimingParameters restored;
+        QVERIFY2(applyVrrReplayControllerSnapshot(vrrTimingParametersToJson(policy), restored, error), qPrintable(error));
+        QCOMPARE(restored.playoutIntervalToleranceUs, uint64_t(tolerance));
+    }
+    for (int tolerance : {1, 200, 251, 2001}) {
+        QVERIFY(!applyVrrReplayControllerSnapshot(
+            {{"playout_interval_tolerance_us", tolerance}}, policy, error));
+        QCOMPARE(policy.playoutIntervalToleranceUs, uint64_t(2000));
+    }
+    auto historical = vrrTimingParametersToJson(policy);
+    historical.remove("playout_interval_tolerance_us");
+    VrrTimingParameters restored;
+    QVERIFY2(applyVrrReplayControllerSnapshot(historical, restored, error), qPrintable(error));
+    QCOMPARE(restored.playoutIntervalToleranceUs, uint64_t(0));
 }
 
 void VrrReplayConfigTest::defaultsRoundTrip()

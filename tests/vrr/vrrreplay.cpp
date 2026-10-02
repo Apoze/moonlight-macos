@@ -11750,6 +11750,16 @@ int main(int argc, char* argv[])
                 capturedParameters.latencyFixAllRates == 0;
             capturedConfig.latencyMode = capturedParameters.latencyFixAllRates != 0 ?
                 (capturedParameters.latencyFixDelayPeriodPerMille == 0 ? 2 : 1) : 0;
+            if (capturedParameters.playoutIntervalToleranceUs != 0) {
+                // The explicit tolerance identifies customizable sessions. Replay
+                // their actual values rather than guessing the last preset name.
+                capturedConfig.timingOptions = {
+                    int(capturedParameters.playoutDelayMaximumPeriodPerMille),
+                    int(capturedParameters.playoutOnTimeTargetPerMillion / 100),
+                    int(capturedParameters.playoutReadinessWindowUs / 1000000),
+                    int(capturedParameters.playoutIntervalToleranceUs)
+                };
+            }
             simulatedConfig = capturedConfig;
             // Current policy is shared across backends. Exact replay below
             // still uses the captured parameters, including the retired Linux policy.

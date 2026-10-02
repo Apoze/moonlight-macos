@@ -526,6 +526,11 @@ bool validateVrrTimingParameters(const VrrTimingParameters& value,
     if (value.playoutCatchupPerMille > 100) {
         return fail("playout_catchup_per_mille must be in 0..100");
     }
+    if (value.playoutIntervalToleranceUs != 0 &&
+            (value.playoutIntervalToleranceUs < 250 || value.playoutIntervalToleranceUs > 2000 ||
+             value.playoutIntervalToleranceUs % 250 != 0)) {
+        return fail("playout_interval_tolerance_us must be 0 (legacy) or 250..2000 in steps of 250");
+    }
     if (value.playoutLateRecovery > 1 ||
             (value.playoutLateRecovery && value.playoutCatchupPerMille == 0)) {
         return fail("playout_late_recovery must be 0 or 1 and requires nonzero catchup");

@@ -5,8 +5,8 @@ of a session working on streaming, decoding, rendering, VRR, latency, or replay.
 It explains the implementation and the reasoning needed to investigate it;
 it does not establish that a particular deployed executable matches the source.
 
-Current source review baseline: `5c35190a` plus bounded late-frame recovery
-and the half-source-frame Low Latency allowance (2026-10-01), plus the 2026-09-30 Reduce judder
+Current source review baseline: `9b7fa143` plus customizable VRR timing
+settings (2026-10-01), plus the 2026-09-30 Reduce judder
 readiness-bound and interval-buffer attribution changes, plus the 2026-10-01
 above-target shrinkage correction and per-interval excess scoring in this
 worktree. Deployment and live
@@ -454,7 +454,8 @@ later that day; see Profile consistency below). Replay
 p99 13.7 ms, zero modelled interval violations) and `latency-presets-stress.json`
 passes in `vrrqueuesim`.
 
-Profile consistency (2026-09-26, over `41312909`): the latency profiles are one
+Historical profile consistency (2026-09-26, over `41312909`; superseded by
+the customizable settings below): the latency profiles are one
 dial. Low Latency, Balanced Target and Smooth differ in their on-time target,
 source-frame allowance, hold and release, with each trade ordered the same
 way; all wait in the same four-frame queue.
@@ -717,14 +718,41 @@ bounded GPU-readiness head-start adaptation, and cadence-gated,
 elapsed-time source-offset recovery. The latency
 presets and persistent Vulkan presentation changes remain active.
 Windows and Linux share one production queue policy: absolute client-added
-interval error with a profile-selected tolerance applied per interval (0.5 ms for Low
-Latency and Balanced Target, 0.2 ms for Smooth), driving the severity-weighted
-preset-duration quality score. Low Latency / Balanced Target / Smooth seek
-99% / 99.5% / 99.99% over 1/2/5 minutes, with 6/8/10-second holds and
-250/250/50 us-per-second release, within the shared four-waiting-frame queue and
-0.5/2/4-source-frame allowances. Fixed 16/24 ms profile ceilings were removed;
-all modes remain subject to the queue-capacity safety bound. These
-are ceilings, not fixed delays or a larger physical queue.
+interval error drives a severity-weighted quality score. The boxed VRR timing
+settings expose four independent values. Presets only fill in those values:
+
+| Preset | Source-frame allowance | Quality target | History | Interval tolerance |
+| --- | --- | --- | --- | --- |
+| Low Latency | 0.5 | 99% | 60 seconds | 0.5 ms |
+| Balanced | 1 | 99.5% | 120 seconds | 0.5 ms |
+| Smooth | 4 | 99.99% | 300 seconds | 0.25 ms |
+
+Custom bounds are 0.25–4 source frames, 90–99.99%, 10–300 seconds, and
+0.25–2 ms tolerance in 0.25 ms steps. Higher tolerance accepts more interval
+variation before counting a quality miss; it does not relax native submission
+spacing or scanout safety. The score is a controller goal, not a guarantee of
+physical display smoothness. All settings share an eight-second clean hold,
+250 us/s release and all-rate admission policy. Old mode-dependent hold/release
+and the implicit 0.2 ms Smooth tolerance remain only in historical parameter
+snapshots. The queue still has four waiting slots; its capacity independently
+limits delay, so an allowance is a ceiling rather than a fixed delay.
+
+`VrrTimingOptions` defines defaults and bounds. Missing saved values migrate
+from the saved preset; invalid persisted values are bounded before use. The
+session snapshots all four values and carries them through decoder recreation
+to the pacer. Calibration identity uses actual values rather than the last
+preset name. The first three map to existing trace parameters; the new
+`playout_interval_tolerance_us` records tolerance explicitly. Its zero default
+preserves historical tolerance selection for old traces. Session-policy replay
+restores all four recorded values for customizable captures. Exact replay always
+uses the full captured parameter snapshot.
+
+The timing controls support gamepad Tab/Shift-Tab focus navigation and left/right
+adjustment, including when a numeric text field has focus. Preset and PyroWave
+calibration-host popups use `AutoResizingComboBox`, switching the gamepad to
+arrow/Return navigation while open and restoring UI navigation on close.
+Reconnect after changing timing values.
+
 Initial interval calibration requires at least 500 ms of contiguous coverage
 and 32 valid intervals. Ordinary growth remains at most 250 us per 250 ms,
 applied at most 125 us per frame. Once qualified, a sequence break requires the
@@ -1144,7 +1172,7 @@ a thirty-second repeat cooldown. Reporting gaps over 2.5 seconds restart
 qualification. They follow the existing connection-quality-warning preference.
 HEVC is suggested only for active AV1 with an initialization-time hardware
 HEVC probe matching the stream's HDR/chroma/resolution; Smooth is suggested
-only for a capped buffer when a different preset is selected. No setting changes
+only for a capped buffer when its configured allowance is below four frames. No setting changes
 automatically. Diagnostic `serviceOverloaded` does not change buffer control.
 
 Network and client messages retain independent status sources. Mouse-mode text

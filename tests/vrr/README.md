@@ -8,14 +8,14 @@ Set `MOONLIGHT_DIAGNOSTICS_TEST_EXPORT` to a new `.zip` path to export its fixtu
 then run `python3 tests/vrr/check_diagnostic_zip.py PATH` for independent CRC and
 content verification. Cold/warm worker exports use the current production policy.
 
-The interval-quality queue is now the production VRR policy (responsive
-revision 7). There is no legacy queue-policy A/B checkbox; saved `v2queue` values are ignored and
-removed when settings are saved. Every normal session uses 0.5 ms tolerance for
-Low Latency and Balanced Target and 0.2 ms for Smooth, with severity-weighted
-preset histories and targets of
-99% / 99.5% / 99.99% for Low Latency / Balanced Target / Smooth. Their clean
-holds are 6 / 8 / 10 seconds and release speeds are 250 / 250 / 50 us per
-second. Their score histories are 1 / 2 / 5 minutes respectively. Growth
+The interval-quality queue is the production VRR policy (responsive revision 9).
+The four customizable timing settings and their bounds are documented in
+[the architecture](../../architecture.md). Low Latency / Balanced / Smooth
+presets use 0.5 / 1 / 4 source frames, 99 / 99.5 / 99.99 percent targets,
+1 / 2 / 5 minute histories, and 0.5 / 0.5 / 0.25 ms interval tolerances.
+All share an eight-second clean hold and 250 us/s release. Custom tolerance
+accepts 0.25–2 ms in 0.25 ms increments; zero is reserved for historical traces.
+Growth
 requires below-target long-window quality, current pressure, fresh readiness-
 related interval error, and serial local work that fits the intended interval.
 Only current pressure with a below-target score renews the clean-time release hold; old score debt remains
@@ -27,7 +27,7 @@ captured revision 2 retains its earlier capacity reset.
 Below-target attributable pressure restarts the hold. Captured revision 1 still
 pauses release above target without restarting the hold, and revision 0 retains
 its historical pressure-based hold.
-Preset allowances are 1/2/4 fitted source frames, additionally limited by
+Preset allowances are 0.5/1/4 fitted source frames, additionally limited by
 the four-waiting-frame queue-capacity bound. Initial interval
 calibration needs at least 500 ms and 32 consecutive valid intervals. Growth
 still requests at most 250 us per 250 ms and applies at most 125 us per frame.
@@ -39,6 +39,23 @@ suite checks 20/30/60/116/240 FPS startup, repeated 120/19/30/99/116/60 FPS
 transitions across all presets and smoothing settings, unchanged attack bounds,
 and no padding growth from clean variable-rate source intervals alone.
 See architecture.md for the complete measurement and bounds.
+
+`tst_vrrpreferences` uses isolated temporary QSettings files to test preset
+migration, custom-value round trips, preset resets and bounds. Controller tests
+verify identical policies for identical values regardless of preset name, all
+tolerance steps, and custom caps through late readiness. `custom-timing-stress.json`
+covers presets and custom endpoint values under nominal and injected work.
+
+The headless controller-navigation checks use the same key mappings as SDL:
+
+```sh
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software qmltestrunner \
+    -input tests/qml -import tests/qml/mocks
+```
+
+They cover preset resets, custom detection, numeric entry, bounded adjustments,
+focus traversal, and calibration-host popup select/cancel. The mock modules
+replace only the platform navigation/theme singletons, not the tested controls.
 
 Historical policy implementations remain available through explicit captured
 controller parameters; session configuration no longer selects the legacy queue-policy
@@ -154,8 +171,8 @@ persistent swapchain; per-frame latch decisions never destroy or recreate it.
 Persistent Mailbox counts as protected presentation and omits the redundant
 software spacing floor, while Immediate and FIFO retain that floor. The
 Gamescope WSI FIFO compatibility path retains its compositor-owned behavior.
-The latency presets cap adaptive padding independently of native mode: one,
-two, and four fitted source frames for Low Latency, Balanced Target, and
+The latency presets cap adaptive padding independently of native mode: half,
+one, and four fitted source frames for Low Latency, Balanced Target, and
 Smooth in live sessions. Explicit historical replay parameters can
 retain the configured stream-rate basis. The effective maximum remains subject to queue capacity. The current stale-work
 rule also protects the learned playout delay; old captured policies retain
@@ -193,7 +210,7 @@ forcing it off invents software-floor backlog on a latch-capable session.
 
 Production sets `playout_responsive_buffer=9`: Low Latency targets 99% over
 1 minute, Balanced Target 99.5% over 2 minutes, and Smooth 99.99% over 5 minutes.
-It applies the preset's 0.5/0.5/0.2 ms tolerance to each absolute
+It applies the selected interval tolerance to each absolute
 submission-interval error before averaging, then weights long-window quality
 loss by the excess relative to the intended interval. The one-second mean
 remains diagnostic and cannot erase an isolated excess. Growth requires both below-target
