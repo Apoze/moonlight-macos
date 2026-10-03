@@ -5,10 +5,11 @@ APP="$ROOT/build/deploy/Moonlight Mac VRR Dev.app"
 RUNTIME="$ROOT/.runtime/builtin"
 [[ -x "$APP/Contents/MacOS/Moonlight" ]] || { echo 'Run scripts/macos/build.sh first.' >&2; exit 1; }
 "$ROOT/build/macos/display-probe" --check-builtin
-mkdir -p "$RUNTIME/Moonlight Game Streaming Project"
+# QSettings uses the organization domain on macOS, even in portable INI mode.
+mkdir -p "$RUNTIME/moonlight-stream.com"
 chmod 700 "$RUNTIME"
 touch "$RUNTIME/portable.dat"
-INI="$RUNTIME/Moonlight Game Streaming Project/Moonlight.ini"
+INI="$RUNTIME/moonlight-stream.com/Moonlight.ini"
 if [[ ! -f "$INI" ]]; then
     cat > "$INI" <<'SETTINGS'
 [General]

@@ -48,6 +48,10 @@ lancement initialise HEVC matériel, Metal, 1920 × 1200 à 60 FPS, 30 Mbit/s,
 V-sync et cadence fixe, HDR et VRR désactivés pour mesurer la référence.
 Les lancements suivants préservent les réglages du profil.
 
+Sur macOS, Qt range ce profil dans
+`.runtime/builtin/moonlight-stream.com/Moonlight.ini`, d'après le domaine
+de l'organisation. Le dossier portant son nom complet n'est pas utilisé.
+
 Le garde-fou identifie la dalle intégrée via CoreGraphics et l'identité native
 de QScreen, sans dépendre de son nom ou d'un numéro d'écran fixe. Il positionne
 l'interface sur cette dalle et refuse un écran intégré absent ou en miroir.
@@ -62,7 +66,7 @@ indépendant. Ne jamais committer son fichier INI, certificats ou journaux.
 
 ## Étapes suivantes
 
-1. Appairer ce profil avec Vibepollo et mesurer une vraie session HEVC puis AV1.
+1. Compléter la référence HEVC avec du contenu animé et tester AV1.
 2. Adapter et auditer le travail Metal de [la PR #3](https://github.com/Nonary/moonlight-qt/pull/3)
    contre les contrats de présentation actuels de VRR18. Étudier la branche
    d'Andy comme référence ; ne pas importer globalement ses changements.
@@ -84,5 +88,17 @@ Ne pas annoncer le VRR Metal ou PyroWave opérationnels sur cette branche.
 - Bundle autonome signé localement et signature vérifiée ; interface ouverte
   sur la dalle intégrée, découverte réseau fonctionnelle. Le garde-fou refuse
   aussi un lancement sans écran natif (test offscreen, code de sortie 2).
-- Le port Metal VRR, le flux réel Vibepollo et les mesures de latence restent
-  à valider dans les prochaines étapes.
+- Appairage Vibepollo effectué avec un client dédié ; lancement, clavier et
+  souris autorisés sur ce client. Profil corrigé pour le chemin Qt macOS.
+- Session HEVC réelle de 85 secondes : bureau Windows visible sur l'écran
+  intégré, VideoToolbox matériel et Metal, flux négocié 1920 × 1200 à 60 FPS,
+  30 Mbit/s, SDR, V-sync actif et VRR désactivé. Le serveur confirme la capture
+  virtuelle 1920 × 1200 et HEVC NVENC. Arrêt Desktop confirmé par le serveur.
+- Sur ce bureau essentiellement statique : 16,39 images/s reçues et rendues,
+  aucune image perdue par le réseau ou le pacing, décodage moyen 3,41 ms,
+  réseau moyen 11 ms. Cela ne valide pas 60 FPS soutenus sur du contenu animé,
+  ni la latence physique de bout en bout. Un premier essai sur l'écran de
+  connexion a été interrompu par un redémarrage serveur lors d'un changement
+  de session Windows ; il est exclu de cette mesure.
+- Le port Metal VRR, AV1, l'audio perçu et les mesures sur contenu animé
+  restent à valider dans les prochaines étapes.
