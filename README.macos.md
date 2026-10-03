@@ -19,8 +19,9 @@ Le rendu fixe reste disponible. PyroWave n'est pas ajouté.
 Voir [la conception et le protocole](docs/macos-metal-presentation.md).
 
 Premier matériel ciblé : MacBook Pro M5 Pro, écran intégré Liquid Retina XDR
-3024 × 1964, mode nominal 120 Hz. L'écran externe reste connecté mais exclu
-des essais. La fréquence nominale et ProMotion ne prouvent pas que la dalle
+3024 × 1964, mode nominal 120 Hz. L’AORUS FO32U2P USB-C fait maintenant
+l’objet de comparaisons séparées, autorisées par l’utilisateur, entre 240 Hz
+fixe et Variable 48–240 Hz. La fréquence nominale et ProMotion ne prouvent pas que la dalle
 suit les horodatages du flux comme un écran externe Adaptive-Sync.
 
 ## Construire sur le Mac
@@ -86,8 +87,8 @@ distinction entre complétion GPU et présentation dans le banc natif.
 Voir [la roadmap et les résultats récents](docs/macos-vrr-roadmap.md).
 Cela ne valide pas à lui seul le scanout physique ou la latence clic-à-photon.
 
-Le prochain périmètre, après la validation de la dalle intégrée, reste l’écran
-externe puis PyroWave séparément. HDR, AV1, audio perçu et longues sessions
+Les premiers essais de l’écran externe sont décrits dans la roadmap ; ils ne
+constituent pas une qualification VRR. PyroWave reste une étape séparée. HDR, AV1, audio perçu et longues sessions
 nécessitent leurs propres essais.
 
 ## Vérification de la base — 3 octobre 2026

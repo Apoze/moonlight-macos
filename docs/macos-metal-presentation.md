@@ -98,7 +98,13 @@ python3 scripts/macos/analyze-cadence-probe.py \
   .runtime/builtin/metal-tests/native-control.csv --warmup 10 --duration 30
 ```
 
-Supported rates are 60 and 120; duration is 5–120 seconds. The optional fourth
+Supported rates are 60, 90 and 120; duration is 5–120 seconds. A rate of `0`
+cycles 60/90/120 every ten seconds and records `requested_fps` per sample.
+`METAL_PROBE_DISPLAY_ID=<CoreGraphics ID>` explicitly selects an external
+screen; without it, the built-in-only default remains. The probe checks the
+selected display identity and containment throughout the trial. A disconnected,
+mirrored or unavailable selected screen is rejected; it never silently falls
+back to another screen. The optional fourth
 argument is `preferredFrameLatency` (1 or 2), followed optionally by `fullscreen`
 for a native macOS fullscreen Space instead of the default borderless window.
 The latter waits three seconds for the transition and refuses an unsuccessful
@@ -114,6 +120,9 @@ One final `timed` argument schedules at the screen link's target timestamp;
 it is rejected with the Metal display link because that API forbids timed
 presentation. Both modes share the encoder and completion observers. These
 are diagnostic controls, not additional production rendering policies.
+In particular, the default CAMetalDisplayLink probe is **not** the production
+shared VRR worker, which uses `nextDrawable`. Failure to reach a requested
+rate in this control does not establish a hardware refresh-rate ceiling.
 
 The probe analyzer distinguishes a zero presentation timestamp from a pending
 callback, GPU failure, CPU presentation-request lateness and GPU completion
@@ -151,8 +160,9 @@ requested rate alone is not proof of uniform source frames.
 Do not infer a production-ready ProMotion implementation from compilation,
 a successful stream, a VRR overlay, or passing controller replay. The saved
 reference profile remains fixed-pacing/VRR-off. The development bundle is
-separate from the system application. External display and PyroWave work have
-not started.
+separate from the system application. External-display comparisons were
+subsequently authorized and are recorded in the roadmap. PyroWave implementation
+has not started.
 
 Final candidate: CADisplayLink requesting 120 Hz, synchronized immediate
 presentation, two drawables, shared balanced VRR controller. Internal M5 Pro
@@ -216,7 +226,7 @@ To finish acceptance, investigate native presentation versus worker readiness
 and drops with repeatable captures on the internal panel, then compare a
 correct display-synchronized ProMotion policy with continuous Adaptive-Sync
 policy. Avoid changing shared controller constants just to hide missed frames.
-Optical latency requires an external camera/sensor protocol and remains open.
+Physical pixel response is outside the software-only measurement scope.
 
 ## Sources reviewed
 

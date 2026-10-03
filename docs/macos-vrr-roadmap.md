@@ -226,3 +226,142 @@ est libre. Les corrections de sécurité des surfaces et de complétion GPU rest
 acquises ; la qualification globale VRR et une optimisation ProMotion démontrée
 restent ouvertes. Ne pas présenter les limites observées comme définitivement
 incorrigibles, ni passer à PyroWave en prétendant la validation VRR terminée.
+
+## Comparaison de référence et vraie cadence variable — 3 octobre, 19 h–19 h 40
+
+**La qualification VRR reste en échec.** Les essais fixes 60/120 FPS servent
+de contrôles ; ils ne valident pas l'adaptation aux changements de cadence.
+Cette campagne ajoute une source réellement variable et vérifie les identifiants
+d'images reçues et leurs intervalles RTP, pas seulement la vitesse de l'animation.
+Le code de rendu de production n'a pas changé pendant cette campagne.
+
+### Contrôles sur la dalle intégrée
+
+Référence : sources Nonary inchangées au commit
+`43225b52c934174736123f894580c0decbe4bec2`, compilées séparément avec les mêmes
+dépendances, Qt 6.11.1 et Xcode 27 que le candidat `c902366a`. Seul l'identifiant
+du bundle de référence est distinct. Profil de comparaison séparé, HEVC
+1920×1200, 30 Mbit/s, ProMotion, secteur Automatique, thermique nominal.
+Chaque fenêtre analysée dure 11 secondes, au centre d'une capture Instruments.
+La source Windows confirme respectivement 660 ou 1 320 images, sans créneau manqué.
+
+| Client / cadence | Callbacks dans 11 s | Intervalle p95 / p99 / maximum |
+| --- | ---: | ---: |
+| Original, 60 FPS | 659 | 25 / 25 / 41,67 ms |
+| Modifié, VRR désactivé, 60 FPS | 659 | 25 / 25 / 33,33 ms |
+| Modifié, VRR activé, 60 FPS | 661 | 58,33 / 66,67 / 83,33 ms |
+| Original, 120 FPS | 1 216, dont 211 au statut non validé | Comparaison incomplète |
+| Modifié, VRR activé, 120 FPS | 1 256 | 8,33 / 16,67 / 25 ms |
+
+À 60 FPS, le chemin VRR est moins régulier dans cet essai. Aucun gain global
+par rapport au client original n'est démontré. La négociation VRR change aussi
+la fréquence de capture virtuelle du serveur : 240 Hz pour les contrôles fixes
+60 FPS, 480 Hz pour l'original 120 FPS, 1 000 Hz pour les essais VRR. Le contrôle
+modifié sans VRR conserve les conditions serveur de l'original 60 FPS ; les
+comparaisons VRR activé/original ne permettent pas d'isoler le seul rendu local.
+
+Correction de mesure : l'attribution Instruments `displayed-surfaces-interval`
+est incomplète et ne mesure pas le nombre total de présentations. Les intervalles
+ci-dessus utilisent `ca-client-presented-handler`. Sur cette exportation Xcode 27,
+les différences de son champ temporel nécessitent le facteur `3/125` de
+`mach_timebase_info`. Cette conversion a été vérifiée par identité de drawable
+contre les horodatages publics Metal sur 920 + 929 + 1 770 événements du candidat,
+avec un écart résiduel inférieur à 0,003 µs. Le statut 3 de 211 événements de
+l'original 120 FPS n'a pas cette validation indépendante : ne pas les compter
+comme des présentations confirmées ni comme des images perdues.
+
+### Écran USB-C et contrôle Metal indépendant
+
+L'AORUS FO32U2P connecté en USB-C propose effectivement **Variable 48–240 Hz**
+dans macOS. Dans ce mode, NSScreen rapporte un intervalle minimal de 4,167 ms,
+maximal de 20,833 ms et une granularité nulle. En 240 Hz fixe, minimum et maximum
+valent 4,167 ms. Cela confirme la disponibilité de la liaison Adaptive-Sync,
+pas que le client l'exploite correctement. Apple documente cette connexion
+[USB-C/DisplayPort et le choix Variable](https://support.apple.com/en-us/102144).
+
+Huit contrôles locaux à barre mobile ont été effectués : 60, 90, 120 FPS et
+cycle 60/90/120 dans chacun des deux modes d'écran. Fenêtre explicitement sur
+l'écran externe, visible et active, zéro erreur GPU, retours de présentation
+complets. Le banc CAMetalDisplayLink n'atteint cependant pas ses consignes :
+environ 54/70/98 présentations/s en mode fixe, 48/59/63 en Variable pour les
+trois cadences constantes. Le premier contrôle Variable 60 chevauche brièvement
+un export Instruments et ne constitue pas une comparaison de performance isolée.
+
+Ce banc est distinct du worker VRR de production qui acquiert avec `nextDrawable`.
+Il n'est donc pas encore une référence de performance fiable et ne démontre
+aucun plafond matériel de la dalle. La sélection explicite d'écran, la cadence
+90 et le cycle variable sont conservés comme fonctions de diagnostic uniquement.
+
+### Flux variable réel : trois séquences comparables
+
+Chaque séquence dure 150 secondes : échauffement 60 FPS, puis sept plateaux
+60 → 80 → 100 → 116 → 100 → 80 → 60 de 20 secondes. Les mesures portent sur
+les 10 secondes centrales de chaque plateau. Le serveur confirme 12 520 images
+par séquence, aucun créneau manqué, et 600/800/1 000/1 160/1 000/800/600 images
+dans les fenêtres centrales. Même client, codec, débit et négociation serveur
+dans les trois essais ; aucune capture Instruments durant ces séquences.
+
+| Source cible | E1 : Variable, 2 surfaces | E2 : fixe 240 Hz, repli VSync | E3 : Variable, 3 surfaces |
+| ---: | ---: | ---: | ---: |
+| 60 FPS | 57,55 | 48,28 | 60,12 |
+| 80 FPS | 61,75 | 59,25 | 63,35 |
+| 100 FPS | 62,08 | 56,69 | 63,52 |
+| 116 FPS | 61,56 | 56,10 | 63,25 |
+| 100 FPS | 61,46 | 49,26 | 63,53 |
+| 80 FPS | 61,91 | 56,37 | 63,72 |
+| 60 FPS | 58,39 | 53,80 | 59,99 |
+
+Les valeurs sont les cadences des événements natifs de présentation confirmés,
+en images/s. La couverture est de 100 % des **images soumises**, pas des images
+reçues. Les identifiants uniques et les intervalles RTP des traces E1/E3 prouvent
+que la cadence entrante change réellement. Le chemin fixe E2 n'émet pas la trace
+du worker VRR ; ne pas lui inventer de compte d'arrivées client.
+
+Dans la fenêtre 116 FPS d'E1, le worker reçoit 1 162 images sans trou d'identifiant
+et en soumet 616. Il en écarte 405 devenues anciennes dans la file, 122 pour
+capacité et 19 pour ancienneté après admission. Sur les images présentées :
+
+| Étape logicielle | E1 moyenne / p95 | E3 moyenne / p95 |
+| --- | ---: | ---: |
+| Décodage | 1,56 / 1,99 ms | 1,58 / 1,99 ms |
+| Attente dans le worker | 19,18 / 25,28 ms | 18,86 / 25,45 ms |
+| Acquisition d'une surface Metal | 12,33 / 15,27 ms | 12,00 / 15,24 ms |
+| Soumission → présentation | 17,74 / 20,16 ms | 32,90 / 37,36 ms |
+| Sortie décodage → présentation | 51,83 / 60,78 ms | 66,32 / 77,46 ms |
+
+L'attente de réutilisation des surfaces est un blocage mesuré du chemin local.
+Augmenter leur nombre de deux à trois ne lève pas le plafond et ajoute de la
+latence : **cette modification est rejetée**, aucun défaut de production changé.
+Cela ne prouve pas encore si l'origine est la configuration de la couche,
+le contrat de présentation ou une interaction avec WindowServer/le pilote.
+Les deux fenêtres comportent aussi 22 pauses de réception supérieures à 40 ms :
+le réseau contribue aux irrégularités, sans expliquer seul la limitation observée.
+Le repli fixe E2 est lui aussi insuffisant ; sa latence inférieure ne constitue
+pas un avantage global puisqu'il présente moins d'images.
+
+Les fenêtres PC/Mac sont corrélées par heure murale et horloge monotone Mac,
+sans mesure de l'écart des horloges des deux machines. Les centres des plateaux
+évitent les transitions ; aucune latence PC→Mac ou réponse physique du pixel
+n'est déduite. Les variations instantanées, fréquences sous 48 Hz et endurance
+ne sont pas qualifiées par cette campagne à plateaux.
+
+### Vérification, conservation et suite
+
+Les replays exacts des captures E1 et E3 passent. Cela valide la reconstruction
+du worker, pas la fluidité. Le banc final compile et est signé ; les huit tests
+Python passent et cinq arguments malformés sont rejetés avant création de fenêtre.
+Captures, profils, binaires de référence, sommes SHA256 et analyses sont conservés
+localement sous `.runtime/comparison-20261003/`, hors Git. Les nouveaux réglages
+du banc n'affectent pas le client installé ni le contrôleur partagé.
+
+Les essais sont arrêtés des deux côtés. L'écran externe est restauré en 240 Hz
+fixe et le secteur Mac en Économie d'énergie, vérifié dans l'interface et par
+`pmset`. Le mode batterie est observé Automatique en fin de campagne, contrairement
+au relevé initial Performance ; aucune action sur son réglage n'a été émise,
+il n'a donc pas été écrasé. Aucune alimentation Windows n'a été modifiée.
+
+La prochaine investigation doit isoler la rétention/présentation des surfaces
+avec une référence Metal plein écran dont la cadence est d'abord démontrée,
+puis comparer ce contrat au client. Retoucher les constantes du contrôleur ou
+augmenter la file sans résoudre cette limite n'est pas justifié. La stabilisation
+VRR reste ouverte ; PyroWave n'a pas commencé.

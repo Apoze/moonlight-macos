@@ -1,9 +1,14 @@
 // Isolate native presentation from decoding, networking and the VRR worker.
+// METAL_PROBE_DISPLAY_ID explicitly selects another display; default is built-in.
+// FPS 0 cycles 60/90/120 every ten seconds.
 // macOS 14+: FPS SECONDS OUTPUT.csv [FRAME_LATENCY [window|fullscreen [metal|screen [timed]]]]
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
 #include <cmath>
+#include <cstdlib>
+#include <climits>
+#include <cerrno>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -19,6 +24,7 @@ struct Sample {
     double presentedCallback = 0, gpuStart = 0, gpuEnd = 0, gpuCallback = 0;
     long gpuStatus = 0;
     double presentRequested = 0;
+    int requestedFps = 0;
 };
 struct Samples { std::mutex lock; std::vector<Sample> rows; bool invalidDisplay = false; };
 
@@ -33,7 +39,7 @@ struct Samples { std::mutex lock; std::vector<Sample> rows; bool invalidDisplay 
 API_AVAILABLE(macos(14.0))
 @interface CadenceProbe : NSObject <CAMetalDisplayLinkDelegate>
 - (instancetype)initWithWindow:(NSWindow*)window screen:(NSScreen*)screen
-                         state:(std::shared_ptr<Samples>)state timed:(bool)timed;
+                         state:(std::shared_ptr<Samples>)state timed:(bool)timed fps:(int)fps;
 - (void)screenDisplayLink:(CADisplayLink*)link;
 @end
 @implementation CadenceProbe {
@@ -43,15 +49,18 @@ API_AVAILABLE(macos(14.0))
     id<MTLRenderPipelineState> _pipeline;
     std::shared_ptr<Samples> _state;
     bool _timed;
+    int _fps, _requestedFps;
+    double _start;
 }
 - (instancetype)initWithWindow:(NSWindow*)window screen:(NSScreen*)screen
-                         state:(std::shared_ptr<Samples>)state timed:(bool)timed
+                         state:(std::shared_ptr<Samples>)state timed:(bool)timed fps:(int)fps
 {
     if ((self = [super init])) {
         _window = window;
         _display = [screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue];
         _state = state;
         _timed = timed;
+        _fps = fps; _requestedFps = fps ? fps : 60; _start = 0;
         _queue = [((CAMetalLayer*)window.contentView.layer).device newCommandQueue];
         // Real moving geometry keeps this control distinct from an almost
         // static clear color and makes the local test recognizable onscreen.
@@ -93,17 +102,26 @@ API_AVAILABLE(macos(14.0))
     const auto display = [screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue];
     const NSRect video = [_window convertRectToScreen:
         [_window.contentView convertRect:_window.contentView.bounds toView:nil]];
-    if (!screen || display != _display || !CGDisplayIsBuiltin(display) ||
+    if (!screen || display != _display ||
         !CGDisplayIsActive(display) || !NSContainsRect(screen.frame, video) ||
         CGDisplayIsInMirrorSet(display)) {
         { std::lock_guard<std::mutex> lock(_state->lock); _state->invalidDisplay = true; }
-        NSLog(@"INVALID: builtin=%u actual=%u screen=%@ window=%@ video=%@", _display, display,
+        NSLog(@"INVALID: selected=%u actual=%u screen=%@ window=%@ video=%@", _display, display,
             NSStringFromRect(screen.frame), NSStringFromRect(_window.frame), NSStringFromRect(video));
         [link setPaused:YES];
         return;
     }
     const double ready = CACurrentMediaTime();
     if (!drawable) return;
+    if (!_start) _start = ready;
+    if (!_fps) {
+        const int rates[] = {60, 90, 120};
+        const int requested = rates[int((ready - _start) / 10) % 3];
+        if (requested != _requestedFps) {
+            _requestedFps = requested;
+            [link setPreferredFrameRateRange:CAFrameRateRangeMake(requested, requested, requested)];
+        }
+    }
     auto buffer = [_queue commandBuffer];
     auto pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = drawable.texture;
@@ -125,6 +143,7 @@ API_AVAILABLE(macos(14.0))
         state->rows.push_back({index + 1, ready, CACurrentMediaTime(),
                               deadline, expected, 0, false,
                               bool(_window.occlusionState & NSWindowOcclusionStateVisible), bool(NSApp.active)});
+        state->rows.back().requestedFps = _requestedFps;
     }
     [drawable addPresentedHandler:^(id<MTLDrawable> shown) {
         std::lock_guard<std::mutex> lock(state->lock);
@@ -155,14 +174,25 @@ API_AVAILABLE(macos(14.0))
 }
 @end
 
+static bool integerArgument(const char* text, int& value)
+{
+    char* end = nullptr;
+    errno = 0;
+    const long parsed = strtol(text, &end, 10);
+    if (errno || end == text || *end || parsed < INT_MIN || parsed > INT_MAX) return false;
+    value = int(parsed);
+    return true;
+}
+
 int main(int argc, char** argv) { @autoreleasepool {
     if (argc < 4 || argc > 8) return 2;
-    const int fps = atoi(argv[1]), seconds = atoi(argv[2]);
-    const int latency = argc >= 5 ? atoi(argv[4]) : 1;
+    int fps = 0, seconds = 0, latency = 1;
+    if (!integerArgument(argv[1], fps) || !integerArgument(argv[2], seconds) ||
+        (argc >= 5 && !integerArgument(argv[4], latency))) return 2;
     const bool fullscreen = argc >= 6 && strcmp(argv[5], "fullscreen") == 0;
     const bool screenDriver = argc >= 7 && strcmp(argv[6], "screen") == 0;
     const bool timed = argc == 8 && strcmp(argv[7], "timed") == 0;
-    if ((fps != 60 && fps != 120) || seconds < 5 || seconds > 120 ||
+    if ((fps != 0 && fps != 60 && fps != 90 && fps != 120) || seconds < 5 || seconds > 120 ||
         (latency != 1 && latency != 2) ||
         (argc >= 6 && !fullscreen && strcmp(argv[5], "window") != 0) ||
         (argc >= 7 && !screenDriver && strcmp(argv[6], "metal") != 0) ||
@@ -171,10 +201,14 @@ int main(int argc, char** argv) { @autoreleasepool {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
         [NSApp finishLaunching];
+        const char* selectedEnv = getenv("METAL_PROBE_DISPLAY_ID");
+        char* end = nullptr;
+        const unsigned long selected = selectedEnv ? strtoul(selectedEnv, &end, 10) : 0;
+        if (selectedEnv && (!selected || !end || *end || selected > UINT32_MAX)) return 2;
         NSScreen* builtin = nil;
         for (NSScreen* screen in NSScreen.screens) {
             const auto id = [screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue];
-            if (CGDisplayIsBuiltin(id) && CGDisplayIsActive(id) && !CGDisplayIsInMirrorSet(id)) builtin = screen;
+            if ((selected ? id == selected : CGDisplayIsBuiltin(id)) && CGDisplayIsActive(id) && !CGDisplayIsInMirrorSet(id)) builtin = screen;
         }
         if (!builtin) return 3;
         NSWindow* window = [[NSWindow alloc] initWithContentRect:builtin.frame
@@ -185,7 +219,7 @@ int main(int argc, char** argv) { @autoreleasepool {
         window.opaque = YES; window.hasShadow = NO;
         [window setFrame:builtin.frame display:NO];
         if (window.screen != builtin || !NSContainsRect(builtin.frame, window.frame)) return 4;
-        NSLog(@"PROBE fps=%d latency=%d fullscreen=%d builtin=%@ actual=%@ window=%@ lowPower=%d thermal=%ld backing=%.1f screenScale=%.1f", fps, latency, fullscreen,
+        NSLog(@"PROBE fps=%d latency=%d fullscreen=%d selected=%@ actual=%@ window=%@ lowPower=%d thermal=%ld backing=%.1f screenScale=%.1f", fps, latency, fullscreen,
             builtin.deviceDescription[@"NSScreenNumber"], window.screen.deviceDescription[@"NSScreenNumber"],
             NSStringFromRect(window.frame), NSProcessInfo.processInfo.lowPowerModeEnabled,
             (long)NSProcessInfo.processInfo.thermalState, window.backingScaleFactor, builtin.backingScaleFactor);
@@ -210,17 +244,17 @@ int main(int argc, char** argv) { @autoreleasepool {
             [window toggleFullScreen:nil];
         }
         auto state = std::make_shared<Samples>();
-        state->rows.reserve(fps * (seconds + 2));
-        auto delegate = [[CadenceProbe alloc] initWithWindow:window screen:builtin state:state timed:timed];
+        state->rows.reserve(240 * (seconds + 2));
+        auto delegate = [[CadenceProbe alloc] initWithWindow:window screen:builtin state:state timed:timed fps:fps];
         id link;
         if (screenDriver) {
             auto screenLink = [builtin displayLinkWithTarget:delegate selector:@selector(screenDisplayLink:)];
-            screenLink.preferredFrameRateRange = CAFrameRateRangeMake(fps, fps, fps);
+            screenLink.preferredFrameRateRange = CAFrameRateRangeMake(fps ? fps : 60, fps ? fps : 60, fps ? fps : 60);
             link = [screenLink retain];
         } else {
             auto metalLink = [[CAMetalDisplayLink alloc] initWithMetalLayer:layer];
             metalLink.delegate = delegate; metalLink.preferredFrameLatency = latency;
-            metalLink.preferredFrameRateRange = CAFrameRateRangeMake(fps, fps, fps);
+            metalLink.preferredFrameRateRange = CAFrameRateRangeMake(fps ? fps : 60, fps ? fps : 60, fps ? fps : 60);
             link = metalLink;
         }
         NSLog(@"PROBE driver=%@ timed=%d", screenDriver ? @"CADisplayLink" : @"CAMetalDisplayLink", timed);
@@ -247,13 +281,13 @@ int main(int argc, char** argv) { @autoreleasepool {
         std::ofstream out(argv[3]); out << std::setprecision(16);
         // No decoder exists in this probe. Keep compatibility with the native
         // presentation analyzer without inventing decoder or source timestamps.
-        out << "serial,rtp,decoder_us,submit_us,presented_us,uncertainty_us,callback,deadline_s,expected_s,submit_media_s,presented_media_s,visible,active,ready_s,presented_callback_s,gpu_start_s,gpu_end_s,gpu_callback_s,gpu_status,present_requested_s\n";
+        out << "serial,rtp,decoder_us,submit_us,presented_us,uncertainty_us,callback,deadline_s,expected_s,submit_media_s,presented_media_s,visible,active,ready_s,presented_callback_s,gpu_start_s,gpu_end_s,gpu_callback_s,gpu_status,present_requested_s,requested_fps\n";
         for (const auto& r : state->rows)
             out << r.serial << ",0,0," << uint64_t(r.submitted * 1e6) << ',' << uint64_t(r.presented * 1e6)
                 << ",0," << r.callback << ',' << r.deadline << ',' << r.expected
                 << ',' << r.submitted << ',' << r.presented << ',' << r.visible << ',' << r.active
                 << ',' << r.ready << ',' << r.presentedCallback << ',' << r.gpuStart << ',' << r.gpuEnd
-                << ',' << r.gpuCallback << ',' << r.gpuStatus << ',' << r.presentRequested << '\n';
+                << ',' << r.gpuCallback << ',' << r.gpuStatus << ',' << r.presentRequested << ',' << r.requestedFps << '\n';
         if (!screenDriver) [(CAMetalDisplayLink*)link setDelegate:nil];
         [link release]; [delegate release]; [window close];
         return state->invalidDisplay ? 6 : out.good() ? 0 : 5;

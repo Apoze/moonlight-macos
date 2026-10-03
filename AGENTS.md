@@ -7,12 +7,18 @@ This checkout is the macOS development fork, based on Nonary VRR18. Read
 The Windows machines, shares and deployment paths below describe the inherited
 upstream environment, not this checkout. Do not deploy to them from this project.
 
-Current phase: implement and measure Metal adaptive presentation on the MacBook's built-in display only. Read docs/macos-metal-presentation.md for its contracts
-and ProMotion limitations. Keep external-display experiments and PyroWave implementation for
-later explicit phases. Use `scripts/macos/launch-builtin.command`; keep personal
+Current phase: measure Metal adaptive presentation on the MacBook's built-in
+panel and, as explicitly authorized on 2026-10-03, compare the USB-C AORUS
+FO32U2P in fixed and Variable modes. Keep the built-in-only launcher as the
+safe default; external trials must explicitly select and verify their screen.
+Restore temporary display and AC power settings after each campaign. Never
+sleep, shut down, or change power settings on the Windows server. Read
+docs/macos-metal-presentation.md for the contracts and ProMotion limitations.
+PyroWave implementation remains a later phase. Use `scripts/macos/launch-builtin.command`; keep personal
 settings, pairing material and logs in ignored `.runtime/`. Do not publish them.
 Build success and a VRR checkbox do not prove adaptive presentation or physical VRR.
-Do not replace the system Moonlight application or change global display settings.
+Do not replace the system Moonlight application. Global display changes are
+limited to the explicitly authorized comparisons and must be restored afterward.
 
 ## Architecture orientation
 
