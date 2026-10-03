@@ -8,10 +8,15 @@ aux versions de Nonary, notamment `moonlight-common-c` à `d6a11bc`.
 
 ## État et périmètre
 
-Cette première branche prépare une application macOS ARM64 reproductible,
-un profil de test isolé et un garde-fou pour l'écran intégré. Elle ne porte
-pas encore le présentateur VRR Metal de la PR #3 et n'ajoute pas PyroWave.
-Le pipeline VideoToolbox/Metal de Nonary constitue la référence initiale.
+**Statut expérimental : la fluidité et les hautes cadences ne sont pas encore
+validées.** Voir les mesures et limites dans le rapport ci-dessous. Le profil
+de référence reste inchangé, VRR désactivé.
+
+La branche `macos/metal-adaptive-presentation` ajoute le présentateur Metal
+au contrôleur VRR de Nonary, avec demande de fréquence ProMotion indépendante du rendu,
+protection des surfaces GPU et mesures des présentations rapportées par macOS.
+Le rendu fixe reste disponible. PyroWave n'est pas ajouté.
+Voir [la conception et le protocole](docs/macos-metal-presentation.md).
 
 Premier matériel ciblé : MacBook Pro M5 Pro, écran intégré Liquid Retina XDR
 3024 × 1964, mode nominal 120 Hz. L'écran externe reste connecté mais exclu
@@ -64,19 +69,20 @@ Aucun mode système ni réglage de l'écran externe n'est modifié.
 Un nouvel appairage PIN avec Vibepollo peut être nécessaire car ce profil est
 indépendant. Ne jamais committer son fichier INI, certificats ou journaux.
 
-## Étapes suivantes
+## Validation de l’intégration
 
-1. Étendre la référence HEVC aux longues sessions, à l'audio et à AV1.
-2. Adapter et auditer le travail Metal de [la PR #3](https://github.com/Nonary/moonlight-qt/pull/3)
-   contre les contrats de présentation actuels de VRR18. Étudier la branche
-   d'Andy comme référence ; ne pas importer globalement ses changements.
-3. Comparer les cadences sur l'écran intégré avec des sessions reproductibles.
-   Distinguer rendu soumis, présentation rapportée par macOS et affichage physique.
-4. Traiter ensuite l'écran externe, puis le décodeur PyroWave Metal séparément.
+Le présentateur est développé sur `macos/metal-adaptive-presentation`.
+Les mesures utilisent `MTLDrawable.presentedTime`, et les horodatages de sortie du décodeur. L’overlay seul ne suffit pas.
+Les CSV bruts et associations restent dans `.runtime`, jamais dans Git.
 
-Les tests déterministes couvrent le contrôleur partagé, les politiques et le
-worker ; ils ne valident pas à eux seuls le rendu Metal ou un flux réel.
-Ne pas annoncer le VRR Metal ou PyroWave opérationnels sur cette branche.
+Les sept suites déterministes couvrent le contrôleur partagé, ses politiques,
+le worker, les configurations de replay, les observations Metal et leurs conversions
+d’horloge. Les traces réelles passent aussi le replay exact.
+Cela ne valide pas à lui seul le scanout physique ou la latence clic-à-photon.
+
+Le prochain périmètre, après la validation de la dalle intégrée, reste l’écran
+externe puis PyroWave séparément. HDR, AV1, audio perçu et longues sessions
+nécessitent leurs propres essais.
 
 ## Vérification de la base — 3 octobre 2026
 
@@ -107,5 +113,5 @@ Ne pas annoncer le VRR Metal ou PyroWave opérationnels sur cette branche.
   Le compteur 240 Hz de la page mesure le navigateur Windows, pas le flux.
   Cette vérification courte valide le transport HEVC à environ 60 FPS ; elle
   ne mesure pas la cadence physique de la dalle ni sa réponse adaptative.
-- Le port Metal VRR, AV1, l'audio perçu et la stabilité sur de longues sessions
-  restent à valider dans les prochaines étapes.
+- Cette référence historique précède le présentateur décrit ci-dessus. AV1,
+  l’audio perçu et la stabilité sur de longues sessions restent à valider.

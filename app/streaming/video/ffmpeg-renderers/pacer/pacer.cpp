@@ -322,6 +322,11 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps,
             // Do not seed the shared policy with retired Linux hitch-policy history.
             context += QStringLiteral("|shared-readiness-policy-v18");
 #endif
+#ifdef Q_OS_MACOS
+            // Do not reuse calibration from the fixed renderer or the early
+            // direct-ProMotion experiment; acquisition/completion changed.
+            context += QStringLiteral("|metal-promotion-refresh-v1");
+#endif
             if (config.latencyMode != 0) {
                 context += QStringLiteral("|latency-mode=%1").arg(config.latencyMode);
             }

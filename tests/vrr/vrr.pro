@@ -73,3 +73,6 @@ linux:packagesExist(wayland-client wayland-server) {
     gamescoperepaint.file = $$PWD/gamescoperepaint.pro
     SUBDIRS += gamescoperepaint
 }
+
+metalpresentation.file = $$PWD/metalpresentation.pro
+SUBDIRS += metalpresentation

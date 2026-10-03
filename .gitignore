@@ -24,3 +24,6 @@ config.tests/*/Makefile
 /*/debug/
 /app/Moonlight_resource.rc
 /app/qml_qmlcache.qrc
+
+# Local Python analysis caches
+__pycache__/

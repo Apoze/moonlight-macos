@@ -3,6 +3,8 @@
 #define AVMediaType AVMediaType_FFmpeg
 #include "vt.h"
 #include "pacer/pacer.h"
+#include "ivrrframepresenter.h"
+#include "metalpresentation.h"
 #undef AVMediaType
 
 #include <SDL_syswm.h>
@@ -10,6 +12,10 @@
 #include "streaming/session.h"
 #include "streaming/streamutils.h"
 #include "path.h"
+#include <QSaveFile>
+#include <QDateTime>
+#include <QCoreApplication>
+#include <QTextStream>
 
 #import <Cocoa/Cocoa.h>
 #import <VideoToolbox/VideoToolbox.h>
@@ -17,6 +23,7 @@
 #import <dispatch/dispatch.h>
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
+#include "metaldisplaylink.h"
 
 extern "C" {
     #include <libavutil/pixdesc.h>
@@ -43,6 +50,11 @@ struct Vertex
 
 #define MAX_VIDEO_PLANES 3
 
+struct MetalCompletion {
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    ~MetalCompletion() { dispatch_release(semaphore); }
+};
+
 class VTMetalRenderer;
 
 @interface DisplayLinkDelegate : NSObject <CAMetalDisplayLinkDelegate>
@@ -51,7 +63,7 @@ class VTMetalRenderer;
 
 @end
 
-class VTMetalRenderer : public VTBaseRenderer
+class VTMetalRenderer : public VTBaseRenderer, public IVrrFramePresenter
 {
 public:
     VTMetalRenderer(bool hwAccel)
@@ -84,8 +96,12 @@ public:
 
     virtual ~VTMetalRenderer() override
     { @autoreleasepool {
-        // Stop the display link and free associated state
+        // The pacing worker has joined before renderer destruction. Adaptive
+        // callbacks retain only independent state and frame resources.
+        cancelFrame();
+        m_DisplayRefreshRequest.stop();
         stopDisplayLink();
+        savePresentationTrace();
         av_frame_free(&m_LatestUnrenderedFrame);
         SDL_DestroyCond(m_FrameReady);
         SDL_DestroyMutex(m_FrameLock);
@@ -231,7 +247,9 @@ public:
         CGColorSpaceRef newColorSpace;
         ParamBuffer paramBuffer;
 
-        // Stop the display link before changing the Metal layer
+        // Only the legacy link owns drawables from this layer. The adaptive
+        // CADisplayLink is screen-bound and must survive first-frame format
+        // initialization and subsequent color changes.
         stopDisplayLink();
 
         switch (colorspace) {
@@ -474,15 +492,15 @@ public:
     }}
 
     // Caller frees frame after we return
-    virtual void renderFrameIntoDrawable(AVFrame* frame, id<CAMetalDrawable> drawable)
-    { @autoreleasepool {
-        std::array<CVMetalTextureRef, MAX_VIDEO_PLANES> cvMetalTextures;
+    id<MTLCommandBuffer> encodeFrame(AVFrame* frame, id<CAMetalDrawable> drawable)
+    {
+        std::array<CVMetalTextureRef, MAX_VIDEO_PLANES> cvMetalTextures{};
         size_t planes = getFramePlaneCount(frame);
         SDL_assert(planes <= MAX_VIDEO_PLANES);
 
         if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX) {
             if (!createTexturesFromFrame(frame, cvMetalTextures)) {
-                return;
+                return nil;
             }
         }
 
@@ -494,6 +512,19 @@ public:
         renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
         auto commandBuffer = [m_CommandQueue commandBuffer];
         auto renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
+        if (!commandBuffer || !renderEncoder) {
+            for (auto texture : cvMetalTextures) if (texture) CFRelease(texture);
+            return nil;
+        }
+        // Texture retention alone does not guarantee decoder-pool ownership.
+        // Keep the AVFrame alive even if a bounded GPU wait times out.
+        auto source = std::shared_ptr<AVFrame>(av_frame_clone(frame), [](AVFrame* f) { av_frame_free(&f); });
+        if (!source) {
+            [renderEncoder endEncoding];
+            for (auto texture : cvMetalTextures) if (texture) CFRelease(texture);
+            return nil;
+        }
+        [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>) { (void)source; (void)drawable; }];
 
         // Bind textures and buffers then draw the video region
         [renderEncoder setRenderPipelineState:m_VideoPipelineState];
@@ -564,17 +595,24 @@ public:
 
         [renderEncoder endEncoding];
 
-        // Flip to the newly rendered buffer
+        return commandBuffer;
+    }
+
+    void renderFrameIntoDrawable(AVFrame* frame, id<CAMetalDrawable> drawable)
+    { @autoreleasepool {
+        std::lock_guard<std::recursive_mutex> lock(m_RenderStateMutex);
+        auto commandBuffer = encodeFrame(frame, drawable);
+        if (!commandBuffer) { requestRecovery(); return; }
+        observePresentation(frame, drawable, 0);
         [commandBuffer presentDrawable:drawable];
         [commandBuffer commit];
-
-        // Wait for the command buffer to complete and free our CVMetalTextureCache references
         [commandBuffer waitUntilCompleted];
     }}
 
     // Caller frees frame after we return
     virtual void renderFrame(AVFrame* frame) override
     { @autoreleasepool {
+        std::lock_guard<std::recursive_mutex> lock(m_RenderStateMutex);
         // Handle changes to the frame's colorspace from last time we rendered
         if (!updateColorSpaceForFrame(frame)) {
             // Trigger the main thread to recreate the decoder
@@ -662,6 +700,15 @@ public:
         int err;
 
         m_Window = params->window;
+        m_DisplayRefresh = params->vrrDisplayRefreshHz;
+        if (!params->testOnly) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Metal power policy: low_power=%d thermal_state=%ld",
+                NSProcessInfo.processInfo.lowPowerModeEnabled, (long)NSProcessInfo.processInfo.thermalState);
+        }
+        m_VrrRequested = params->enableVrr && !params->testOnly &&
+            qgetenv("MOONLIGHT_METAL_FIXED_CONTROL") != "1";
+        m_TracePrefix = QString::fromUtf8(qgetenv("MOONLIGHT_METAL_TRACE"));
+        m_PresentationState = std::make_shared<MetalPresentation::State>(m_TracePrefix.isEmpty() ? 256 : 65536);
         m_FrameRateRange = CAFrameRateRangeMake(params->frameRate, params->frameRate, params->frameRate);
 
         id<MTLDevice> device = getMetalDevice();
@@ -740,10 +787,212 @@ public:
 
             // Allow tearing if V-Sync is off (also requires direct display path)
             m_MetalLayer.displaySyncEnabled = params->enableVsync;
+            m_MetalLayer.maximumDrawableCount = m_VrrRequested ? 2 : 3;
+            m_MetalLayer.allowsNextDrawableTimeout = YES;
+            SDL_SysWMinfo info;
+            SDL_VERSION(&info.version);
+            if (SDL_GetWindowWMInfo(m_Window, &info)) {
+                NSScreen* screen = info.info.cocoa.window.screen;
+                m_AdaptiveDisplay = screen && screen.minimumRefreshInterval > 0 &&
+                    screen.maximumRefreshInterval > screen.minimumRefreshInterval;
+                m_ProMotion = screen && screen.displayUpdateGranularity > 0;
+                if (m_VrrRequested && m_AdaptiveDisplay && m_ProMotion &&
+                    !m_DisplayRefreshRequest.start(screen, m_DisplayRefresh)) {
+                    m_AdaptiveDisplay = false;
+                }
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Metal display: min/max %.3f/%.3f ms, granularity %.3f ms, %s; physical scanout unverified",
+                    screen.minimumRefreshInterval * 1000, screen.maximumRefreshInterval * 1000,
+                    screen.displayUpdateGranularity * 1000, m_ProMotion ? "ProMotion (OS-selected cadence)" : "display timing");
+            }
+            if (checkSupport() == VrrFallbackReason::NoFallback) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Metal adaptive presenter: shared VRR worker, synchronized presentation, ProMotion refresh request, bounded drawable pool; %s",
+                    m_ProMotion ? "ProMotion cadence is quantized by macOS" : "Adaptive-Sync scheduling requested");
+            }
+            else {
+                // Eligibility rejection must retain the ordinary display link.
+                m_VrrRequested = false;
+                m_DisplayRefreshRequest.stop();
+                m_MetalLayer.maximumDrawableCount = 3;
+            }
         }
 
         return true;
     }}
+
+    void setHdrMode(bool enabled) override
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_RenderStateMutex);
+        VTBaseRenderer::setHdrMode(enabled);
+    }
+
+    IVrrFramePresenter* getVrrFramePresenter() override { return this; }
+
+    VrrFallbackReason checkSupport() const override
+    {
+        if (!m_VrrRequested) return VrrFallbackReason::UnsupportedRenderer;
+        if (!m_HwAccel || !m_MetalLayer || !m_MetalLayer.displaySyncEnabled || !m_AdaptiveDisplay)
+            return VrrFallbackReason::AdaptivePresentationUnavailable;
+        if (m_ProMotion) {
+            if (@available(macOS 14, *)) {} else { return VrrFallbackReason::AdaptivePresentationUnavailable; }
+        }
+        return VrrFallbackReason::NoFallback;
+    }
+
+    // Synchronized Metal presents always honor non-tearing requests. macOS
+    // owns the latch cadence, including ProMotion's discrete refresh choices.
+    bool canLatchAdaptivePresent() const override { return true; }
+
+    VrrPrepareResult prepareFrame(AVFrame* frame, uint64_t) override
+    { @autoreleasepool {
+        std::lock_guard<std::recursive_mutex> lock(m_RenderStateMutex);
+        cancelFrame();
+        VrrPrepareResult result;
+        if (!frame || m_VrrSuspended || checkSupport() != VrrFallbackReason::NoFallback) return result;
+        const auto start = LiGetMicroseconds();
+        if (!updateColorSpaceForFrame(frame) || !updateVideoRegionSizeForFrame(frame)) {
+            requestRecovery();
+            return result;
+        }
+        const auto acquire = LiGetMicroseconds();
+        auto drawable = [m_MetalLayer nextDrawable];
+        const auto acquired = LiGetMicroseconds();
+        if (!drawable) return result; // Occlusion/timeout: never present an old image.
+        auto buffer = encodeFrame(frame, drawable);
+        if (!buffer) { requestRecovery(); return result; }
+        // The semaphore is retained by the completion block, including after a
+        // timeout. No callback refers to this renderer or its SDL primitives.
+        auto completion = std::make_shared<MetalCompletion>();
+        [buffer addCompletedHandler:^(id<MTLCommandBuffer>) { dispatch_semaphore_signal(completion->semaphore); }];
+        [buffer commit];
+        const auto waitStart = LiGetMicroseconds();
+        const auto status = dispatch_semaphore_wait(completion->semaphore, dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC));
+        const auto ready = LiGetMicroseconds();
+        if (status != 0 || buffer.status != MTLCommandBufferStatusCompleted) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Metal preparation failed or exceeded 50 ms");
+            requestRecovery();
+            return result;
+        }
+        m_PreparedDrawable = [drawable retain];
+        m_PreparedDecoderUs = frame->pkt_dts > 0 ? frame->pkt_dts : 0;
+        m_PreparedRtp = frame->pts;
+        m_PreparedAtUs = start;
+        result.prepared = result.sourceFrameReusable = true;
+        result.timingValid = true;
+        result.acquireUs = acquired - acquire;
+        result.renderUs = waitStart - acquired + acquire - start;
+        result.feedback.gpuReadyAttempted = true;
+        result.feedback.gpuReadyTimingValid = true;
+        result.feedback.gpuReadyWaitStartUs = waitStart;
+        result.feedback.gpuReadyTimeUs = ready;
+        return result;
+    }}
+
+    VrrPresentFeedback presentAdaptive(const VrrPresentRequest&) override
+    { @autoreleasepool {
+        if (!m_PreparedDrawable || m_VrrSuspended) return cancelFrame();
+        VrrPresentFeedback feedback;
+        feedback.nativeBackendValid = true;
+        feedback.nativeBackend = VrrNativePresentationBackend::Metal;
+        feedback.submissionId = observePresentation(nullptr, m_PreparedDrawable, m_PreparedAtUs);
+        feedback.submissionIdValid = true;
+        feedback.submissionTimeUs = LiGetMicroseconds();
+        feedback.submissionTimeValid = true;
+        // Rendering has completed; this call neither queues another GPU read
+        // of the decoder surface nor waits for a second frame scheduler.
+        [m_PreparedDrawable present];
+        feedback.presented = true;
+        const auto observation = m_PresentationState->latest();
+        if (observation.serial > m_LastObservedSerial) {
+            m_LastObservedSerial = observation.serial;
+            feedback.latchSampleValid = true;
+            feedback.latchTimeKind = Vrr13::PresentationTimeKind::DisplayEvent;
+            feedback.latchSubmissionId = observation.serial;
+            feedback.latchTimeUs = observation.presentedUs;
+            feedback.presentationUncertaintyUs = observation.uncertaintyUs;
+        }
+        [m_PreparedDrawable release];
+        m_PreparedDrawable = nil;
+        return feedback;
+    }}
+
+    VrrPresentFeedback cancelFrame() override
+    {
+        [m_PreparedDrawable release];
+        m_PreparedDrawable = nil;
+        VrrPresentFeedback feedback;
+        feedback.cancelled = true;
+        return feedback;
+    }
+
+    void setSuspended(bool suspended) override
+    {
+        m_VrrSuspended = suspended;
+        m_DisplayRefreshRequest.setPaused(suspended);
+        if (suspended) cancelFrame();
+    }
+
+    bool restoreFixedPresentation(VrrFallbackReason) override
+    {
+        m_VrrRequested = false;
+        m_DisplayRefreshRequest.stop();
+        m_MetalLayer.maximumDrawableCount = 3;
+        return true;
+    }
+
+    void requestRecovery()
+    {
+        SDL_Event event{};
+        event.type = SDL_RENDER_DEVICE_RESET;
+        SDL_PushEvent(&event);
+    }
+
+    uint64_t observePresentation(AVFrame* frame, id<CAMetalDrawable> drawable, uint64_t prepared)
+    {
+        auto state = m_PresentationState;
+        MetalPresentation::ClockSample clock;
+        clock.beforeUs = LiGetMicroseconds();
+        clock.mediaSeconds = CACurrentMediaTime();
+        clock.afterUs = LiGetMicroseconds();
+        MetalPresentation::Record record;
+        record.drawable = drawable.drawableID;
+        record.decoderUs = frame ? (frame->pkt_dts > 0 ? frame->pkt_dts : 0) : m_PreparedDecoderUs;
+        record.rtp = frame ? frame->pts : m_PreparedRtp;
+        record.prepareUs = prepared;
+        record.submitUs = clock.beforeUs;
+        record.submitMedia = clock.mediaSeconds;
+        const auto serial = state->submit(record);
+        [drawable addPresentedHandler:^(id<MTLDrawable> shown) {
+            state->presented(serial, shown.presentedTime, LiGetMicroseconds(), clock);
+        }];
+        return serial;
+    }
+
+    void savePresentationTrace()
+    {
+        if (m_TracePrefix.isEmpty() || !m_PresentationState) return;
+        const auto records = m_PresentationState->snapshot();
+        if (records.empty()) return;
+        const QString path = m_TracePrefix + QString("-%1-%2.csv")
+            .arg(QCoreApplication::applicationPid()).arg(QDateTime::currentMSecsSinceEpoch());
+        QSaveFile file(path);
+        if (!file.open(QIODevice::WriteOnly)) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Unable to save Metal presentation trace");
+            return;
+        }
+        QTextStream out(&file);
+        out.setRealNumberPrecision(16);
+        out << "serial,drawable,rtp,decoder_us,prepare_us,submit_us,presented_us,observed_us,uncertainty_us,submit_media_s,presented_media_s,callback,adaptive,promotion\n";
+        for (const auto& r : records) {
+            out << r.serial << ',' << r.drawable << ',' << r.rtp << ',' << r.decoderUs << ','
+                << r.prepareUs << ',' << r.submitUs << ',' << r.presentedUs << ',' << r.observedUs << ','
+                << r.uncertaintyUs << ',' << r.submitMedia << ',' << r.presentedMedia << ',' << r.callback
+                << ',' << m_VrrRequested << ',' << m_ProMotion << '\n';
+        }
+        out.flush();
+        if (file.commit()) SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Metal presentation trace: %s", qPrintable(path));
+    }
 
     virtual void notifyOverlayUpdated(Overlay::OverlayType type) override
     { @autoreleasepool {
@@ -810,14 +1059,15 @@ public:
     void startDisplayLink()
     {
         if (@available(macOS 14, *)) {
-            if (m_MetalDisplayLink != nullptr || !m_MetalLayer.displaySyncEnabled || !isAppleSilicon()) {
+            if (m_VrrRequested || m_MetalDisplayLink != nullptr || !m_MetalLayer.displaySyncEnabled || !isAppleSilicon()) {
                 return;
             }
 
             m_MetalDisplayLink = [[CAMetalDisplayLink alloc] initWithMetalLayer:m_MetalLayer];
             m_MetalDisplayLink.preferredFrameLatency = 1.0f;
             m_MetalDisplayLink.preferredFrameRateRange = m_FrameRateRange;
-            m_MetalDisplayLink.delegate = [[DisplayLinkDelegate alloc] initWithRenderer:this];
+            m_DisplayLinkDelegate = [[DisplayLinkDelegate alloc] initWithRenderer:this];
+            m_MetalDisplayLink.delegate = m_DisplayLinkDelegate;
             [m_MetalDisplayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
         }
     }
@@ -830,7 +1080,12 @@ public:
             }
 
             [m_MetalDisplayLink invalidate];
+            m_MetalDisplayLink.delegate = nil;
+            [m_MetalDisplayLink release];
             m_MetalDisplayLink = nullptr;
+            auto delegate = m_DisplayLinkDelegate;
+            dispatch_async(dispatch_get_main_queue(), ^{ [delegate release]; });
+            m_DisplayLinkDelegate = nil;
         }
     }
 
@@ -897,6 +1152,12 @@ public:
 
     bool notifyWindowChanged(PWINDOW_STATE_CHANGE_INFO info) override
     {
+        if (!info) return false;
+        if (m_VrrRequested && (info->stateChangeFlags & (WINDOW_STATE_CHANGE_DISPLAY | WINDOW_STATE_CHANGE_SIZE))) {
+            // Recreate on output transitions so eligibility and drawable geometry
+            // are sampled on the main thread, never queried from the worker.
+            return false;
+        }
         auto unhandledStateFlags = info->stateChangeFlags;
 
         // We can always handle size changes
@@ -937,7 +1198,18 @@ public:
     }
 
 private:
+    std::recursive_mutex m_RenderStateMutex;
+    MetalDisplayRefresh m_DisplayRefreshRequest;
+    float m_DisplayRefresh = 0;
     bool m_HwAccel;
+    bool m_VrrRequested = false, m_VrrSuspended = false;
+    bool m_AdaptiveDisplay = false, m_ProMotion = false;
+    id<CAMetalDrawable> m_PreparedDrawable = nil;
+    DisplayLinkDelegate* m_DisplayLinkDelegate = nil;
+    uint64_t m_PreparedDecoderUs = 0, m_PreparedAtUs = 0, m_LastObservedSerial = 0;
+    int64_t m_PreparedRtp = 0;
+    QString m_TracePrefix;
+    std::shared_ptr<MetalPresentation::State> m_PresentationState;
     SDL_Window* m_Window;
     AVBufferRef* m_HwContext;
     CAMetalLayer* m_MetalLayer;
@@ -968,7 +1240,8 @@ private:
 }
 
 - (id)initWithRenderer:(VTMetalRenderer *)renderer {
-    _renderer = renderer;
+    self = [super init];
+    if (self) _renderer = renderer;
     return self;
 }
 

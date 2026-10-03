@@ -7,8 +7,8 @@ This checkout is the macOS development fork, based on Nonary VRR18. Read
 The Windows machines, shares and deployment paths below describe the inherited
 upstream environment, not this checkout. Do not deploy to them from this project.
 
-Current phase: establish and validate the baseline on the MacBook's built-in
-display only. Keep external-display experiments and PyroWave implementation for
+Current phase: implement and measure Metal adaptive presentation on the MacBook's built-in display only. Read docs/macos-metal-presentation.md for its contracts
+and ProMotion limitations. Keep external-display experiments and PyroWave implementation for
 later explicit phases. Use `scripts/macos/launch-builtin.command`; keep personal
 settings, pairing material and logs in ignored `.runtime/`. Do not publish them.
 Build success and a VRR checkbox do not prove adaptive presentation or physical VRR.

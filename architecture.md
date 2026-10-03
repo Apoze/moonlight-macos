@@ -2,9 +2,15 @@
 
 macOS fork setup (2026-10-03): the opt-in `MOONLIGHT_BUILTIN_DISPLAY_ONLY=1`
 guard selects the native built-in QScreen, refuses unavailable/mirrored panels,
-and stops a stream that moves to an external display. It does not change the
-timing controller or implement Metal adaptive presentation. See
-[README.macos.md](README.macos.md) for the isolated baseline and validation scope.
+and stops a stream that moves to an external display. The macOS adaptive
+presenter now implements IVrrFramePresenter using shared GPU encoding, bounded
+completion, and native presentation callbacks. The shared timing policy is
+unchanged. ProMotion uses a maximum-rate CADisplayLink request independent of drawable
+ownership and nextDrawable acquisition. All adaptive submissions use synchronized
+present after the shared worker target; the adaptive drawable pool is bounded to two.
+Only the internal ProMotion panel is currently under test; OS timestamps do not
+prove physical VRR. See [Metal design](docs/macos-metal-presentation.md) and
+[README.macos.md](README.macos.md) for the implementation and validation scope.
 
 This is the persistent technical orientation for this fork. Read it at the start
 of a session working on streaming, decoding, rendering, VRR, latency, or replay.

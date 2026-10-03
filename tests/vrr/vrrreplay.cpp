@@ -45,6 +45,7 @@ constexpr uint64_t kCapturedWorkerQueueCapacity = 3;
 constexpr uint64_t kNativeBackendDxgi = 1;
 constexpr uint64_t kNativeBackendVulkan = 2;
 constexpr uint64_t kNativeBackendComposition = 3;
+constexpr uint64_t kNativeBackendMetal = 4;
 constexpr uint64_t kSdlWindowFullscreenDesktop = 0x00001001ULL;
 constexpr uint64_t kDisplayConfigPathActive = 0x00000001ULL;
 constexpr uint64_t kDisplayConfigPathBoostRefreshRate = 0x00000010ULL;
@@ -9715,7 +9716,8 @@ int main(int argc, char* argv[])
             const bool nativeBackendKnown =
                 nativeBackend == kNativeBackendDxgi ||
                 nativeBackend == kNativeBackendVulkan ||
-                nativeBackend == kNativeBackendComposition;
+                nativeBackend == kNativeBackendComposition ||
+                nativeBackend == kNativeBackendMetal;
             const bool nativeDxgiPresentAttempt =
                 nativeBackendDeclared &&
                 nativeBackend == kNativeBackendDxgi;
@@ -9762,8 +9764,11 @@ int main(int argc, char* argv[])
                 presented && submissionIdQueryResultDeclared ? 1 : 0;
             metrics.presentedFrameStatsQueryResultValidRows +=
                 presented && frameStatsQueryResultDeclared ? 1 : 0;
+            // Metal's present selector returns void; absence of a native
+            // result code is part of its contract, not a fabricated success.
             bool nativeOutcomeRelationshipValid =
-                nativeBackendDeclared == nativePresentResultDeclared &&
+                (nativeBackendDeclared == nativePresentResultDeclared ||
+                 (nativeBackendDeclared && nativeBackend == kNativeBackendMetal && !nativePresentResultDeclared)) &&
                 (!nativeBackendDeclared || nativeBackendKnown) &&
                 (!nativePresentResultDeclared ||
                  nativePresentationAccepted == presented);
@@ -9789,9 +9794,9 @@ int main(int argc, char* argv[])
                       (!metrics.qpcCorrelationTelemetryAvailable ||
                        qpcCorrelationDeclared)));
             }
-            else if (nativeBackendDeclared && nativeBackend == kNativeBackendComposition) {
-                // The presentation manager has its own present IDs and verified
-                // display events. None of the DXGI query or flag fields apply.
+            else if (nativeBackendDeclared && (nativeBackend == kNativeBackendComposition || nativeBackend == kNativeBackendMetal)) {
+                // Composition and Metal have submission IDs and display-event
+                // observations. Neither exposes DXGI query or flag fields.
                 nativeOutcomeRelationshipValid = nativeOutcomeRelationshipValid &&
                     normalPresentAttempt && (presented == submissionIdValid) &&
                     !submissionIdQueryResultDeclared && !frameStatsQueryResultDeclared &&
@@ -10652,20 +10657,29 @@ int main(int argc, char* argv[])
             fields, columns.queueDepthAfter);
         const uint64_t completionQueueDepth = optionalUnsignedField(
             fields, columns.completionQueueDepth);
+        // Admission uses the captured controller's queue limit, which can
+        // differ from the historical three-frame default. Never validate a
+        // capture against a candidate scenario's counterfactual capacity.
+        const uint64_t configuredQueueCapacity = optionalUnsignedField(
+            fields, columns.capturedParameterColumns.value(
+                QStringLiteral("controller.playout_queue_frames"), -1));
+        const uint64_t capturedQueueCapacity = configuredQueueCapacity != 0 ?
+            std::min<uint64_t>(configuredQueueCapacity, VrrLargestQueuedFrames) :
+            kCapturedWorkerQueueCapacity;
         const uint64_t expectedQueueDepthAfter = queueAccepted ?
             std::min(
                 saturatingAdd(queueDepthBefore, 1),
-                kCapturedWorkerQueueCapacity) :
+                capturedQueueCapacity) :
             queueDepthBefore;
         const bool queueStateValid =
-            queueDepthBefore <= kCapturedWorkerQueueCapacity &&
-            queueDepthAfter <= kCapturedWorkerQueueCapacity &&
+            queueDepthBefore <= capturedQueueCapacity &&
+            queueDepthAfter <= capturedQueueCapacity &&
             queueDepthAfter == expectedQueueDepthAfter &&
             queueAccepted == (disposition != "arrival_rejected");
         metrics.queueStateMismatches += queueStateValid ? 0 : 1;
         if (metrics.completionQueueDepthTelemetryAvailable) {
             metrics.completionQueueDepthOutOfRangeRows +=
-                completionQueueDepth <= kCapturedWorkerQueueCapacity ? 0 : 1;
+                completionQueueDepth <= capturedQueueCapacity ? 0 : 1;
             metrics.observedCompletionQueueDepth.add(completionQueueDepth);
         }
         if (scenario.mode == "worker") {
@@ -14796,7 +14810,8 @@ int main(int argc, char* argv[])
             observation.dxgi = field("native_backend") == kNativeBackendDxgi;
             const bool fixedPresentationMode = traceHeader.contains("presentation_uncertainty_us") &&
                 (field("native_backend") == kNativeBackendVulkan ||
-                 field("native_backend") == kNativeBackendComposition);
+                 field("native_backend") == kNativeBackendComposition ||
+                 field("native_backend") == kNativeBackendMetal);
             if (fixedPresentationMode) observation.latched = false;
             const uint64_t frequency = field("latch_raw_sync_qpc_frequency_hz");
             observation.sampleValid = field("latch_valid") &&
