@@ -66,7 +66,7 @@ indépendant. Ne jamais committer son fichier INI, certificats ou journaux.
 
 ## Étapes suivantes
 
-1. Compléter la référence HEVC avec du contenu animé et tester AV1.
+1. Étendre la référence HEVC aux longues sessions, à l'audio et à AV1.
 2. Adapter et auditer le travail Metal de [la PR #3](https://github.com/Nonary/moonlight-qt/pull/3)
    contre les contrats de présentation actuels de VRR18. Étudier la branche
    d'Andy comme référence ; ne pas importer globalement ses changements.
@@ -100,5 +100,12 @@ Ne pas annoncer le VRR Metal ou PyroWave opérationnels sur cette branche.
   ni la latence physique de bout en bout. Un premier essai sur l'écran de
   connexion a été interrompu par un redémarrage serveur lors d'un changement
   de session Windows ; il est exclu de cette mesure.
-- Le port Metal VRR, AV1, l'audio perçu et les mesures sur contenu animé
+- Test animé supplémentaire sur la même configuration : deux relevés de
+  l'overlay, espacés de 41 secondes, montrent 60,14 puis 60,07 FPS reçus,
+  décodés et rendus, avec 0 % de pertes réseau et de pertes par le pacing.
+  Au second relevé : réseau 3 ms, décodage 2,64 ms, traitement hôte 1,6 ms.
+  Le compteur 240 Hz de la page mesure le navigateur Windows, pas le flux.
+  Cette vérification courte valide le transport HEVC à environ 60 FPS ; elle
+  ne mesure pas la cadence physique de la dalle ni sa réponse adaptative.
+- Le port Metal VRR, AV1, l'audio perçu et la stabilité sur de longues sessions
   restent à valider dans les prochaines étapes.
