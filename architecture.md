@@ -15,8 +15,10 @@ conservative commit-to-observation bracket across presentation or cancellation;
 replay validates these without interpreting them as DXGI fences or Vulkan polls.
 The guard creates the video window hidden and verifies the complete native video
 area before showing it, then rechecks during streaming.
-Only the internal ProMotion panel is currently under test; OS timestamps do not
-prove physical VRR. See [Metal design](docs/macos-metal-presentation.md) and
+The internal ProMotion panel and an explicitly selected USB-C Adaptive-Sync
+display have been tested separately; neither path is performance-qualified.
+The standalone probe now includes short worker-driven surface-lifetime controls,
+without changing production scheduling. OS timestamps do not prove physical VRR. See [Metal design](docs/macos-metal-presentation.md) and
 [README.macos.md](README.macos.md) for the implementation and validation scope.
 
 This is the persistent technical orientation for this fork. Read it at the start

@@ -14,6 +14,8 @@ safe default; external trials must explicitly select and verify their screen.
 Restore temporary display and AC power settings after each campaign. Never
 sleep, shut down, or change power settings on the Windows server. Read
 docs/macos-metal-presentation.md for the contracts and ProMotion limitations.
+Prefer focused 10–15 second diagnostics, as requested by the user; do not
+repeat 150-second browser sequences for a hypothesis a short local test can resolve.
 PyroWave implementation remains a later phase. Use `scripts/macos/launch-builtin.command`; keep personal
 settings, pairing material and logs in ignored `.runtime/`. Do not publish them.
 Build success and a VRR checkbox do not prove adaptive presentation or physical VRR.

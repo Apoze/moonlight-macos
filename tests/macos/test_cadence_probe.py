@@ -40,6 +40,18 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(result['gpu_end_after_expected_presentation'], 1)
         self.assertEqual(result['presented_minus_expected_ms']['mean'], 5)
 
+    def test_worker_without_display_deadlines_does_not_invent_lateness(self):
+        result = probe.stages([row(deadline_s=0, expected_s=0, present_requested_s=0,
+                                  presentation_enqueue_s=1.004, acquire_start_s=.995, acquired_s=1)])
+        self.assertEqual(result['deadline_observations'], 0)
+        self.assertEqual(result['expected_presentation_observations'], 0)
+        self.assertEqual(result['cpu_submit_after_deadline'], 0)
+        self.assertEqual(result['gpu_end_after_expected_presentation'], 0)
+        self.assertIsNone(result['presented_minus_expected_ms'])
+        self.assertEqual(result['command_buffer_presentation_enqueued'], 1)
+        self.assertEqual(result['present_request_pending'], 0)
+        self.assertEqual(result['drawable_acquire_ms']['mean'], 5)
+
     def test_present_request_can_miss_deadline_after_timely_commit(self):
         result = probe.stages([row(present_requested_s=1.011)])
         self.assertEqual(result['cpu_submit_after_deadline'], 0)

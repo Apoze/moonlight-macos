@@ -365,3 +365,117 @@ avec une référence Metal plein écran dont la cadence est d'abord démontrée,
 puis comparer ce contrat au client. Retoucher les constantes du contrôleur ou
 augmenter la file sans résoudre cette limite n'est pas justifié. La stabilisation
 VRR reste ouverte ; PyroWave n'a pas commencé.
+
+## Isolation courte et inspection d'autres intégrations — 3 octobre, après 20 h
+
+À la demande de l'utilisateur, les nouveaux essais locaux durent 10 ou 12 s
+(plus 3 s de transition plein écran). Aucun navigateur, flux Windows ni réglage
+serveur n'intervient. Ils réutilisent le dessin du banc, avec une boucle dédiée,
+un autorelease pool par image, des mesures d'acquisition des surfaces et un
+contrôle d'écran sur le thread principal. Trois opérations sont comparées :
+présentation attachée au command buffer, durée minimale native et attente GPU
+suivie de `present`, cette dernière reproduisant l'ordre du client sans ses files.
+
+### Références inspectées et limites de transposition
+
+- [Andy Grundman, `57088f1a`](https://github.com/andygrundman/moonlight-qt/blob/57088f1a22bd7a3f1ced1af5102444edcc422241/app/streaming/video/ffmpeg-renderers/vt_metal.mm) :
+  VRR continu conditionné au plein écran, ProMotion distingué par défaut,
+  présentation dans un scheduled handler, `presentAfterMinimumDuration` fondé
+  sur le temps GPU moyen ou, en option expérimentale, les écarts PTS. Acquisition
+  suivante après présentation. Son pacer immédiat remplace l'ordonnancement
+  habituel : ce n'est pas une fonction isolée à greffer au worker Nonary.
+- [RetroArch, `dca728ca`](https://github.com/libretro/RetroArch/blob/dca728cad854a1f9eb1188cc0094d8f8e7c5cbe2/gfx/drivers/metal.m) :
+  scheduled handler, libération du drawable puis acquisition du suivant pour
+  réguler la boucle. Cette régulation ne garantit pas la restitution des PTS
+  d'un flux réseau variable.
+- [MoltenVK, `52aa21f5`](https://github.com/KhronosGroup/MoltenVK/blob/52aa21f54d7a84c5c441fc26359692b0980b384c/MoltenVK/MoltenVK/GPUObjects/MVKImage.mm) :
+  présentation depuis un scheduled handler et rétention explicite jusqu'à
+  complétion ; acquisition et observation de présentation restent distinctes.
+  Le contexte est une swapchain Vulkan, pas le worker vidéo de ce fork.
+- [Exemple Apple CAMetalDisplayLink](https://developer.apple.com/documentation/metal/achieving-smooth-frame-rates-with-a-metal-display-link) :
+  `preferredFrameLatency=2`, drawable fourni par le lien et présentation attachée
+  au command buffer. Il ne faut pas mélanger ce fournisseur de drawables avec
+  `nextDrawable` sur la même couche. L'[exemple Adaptive-Sync Apple](https://developer.apple.com/videos/play/wwdc2021/10147/)
+  décrit aussi une boucle indépendante utilisant une durée minimale native.
+
+Le code de couche Metal de mpv a également été lu : il traite notamment
+l'opacité et les transitions de couche avec MoltenVK, mais ne constitue pas
+une implémentation de remplacement du pacing vidéo de Moonlight. Aucun de ces
+programmes n'a été déclaré validé sur cette machine à partir de sa seule source.
+
+### Résultats discriminants
+
+Les premières comparaisons constantes ont reçu des callbacks avec
+`presentedTime=0`, y compris avec l'ancien binaire du banc et en 240 Hz fixe.
+Un contrôle visuel distinct confirme que l'image est visible. Ces captures
+ne permettent donc pas de déduire un nombre d'images affichées ou perdues.
+L'attachement d'Instruments coïncide avec le retour des horodatages positifs
+et un débit inférieur ; les horodatages restent disponibles après son arrêt.
+Ce changement d'état empêche de traiter l'ensemble comme un A/B de performances
+isolé. L'origine exacte de cet effet persistant n'est pas établie.
+
+L'attachement initial a expiré avant de produire une trace complète. Une capture
+séparée lancée par Instruments a ensuite été enregistrée et exportée ; elle
+rapporte encore le refus Direct to Display pour géométrie de couche. Ce motif
+n'est toujours pas une preuve suffisante de la cause du débit. Le contrôle
+`fixed120-after-clean-stop` est exclu comme baseline : export concomitant et
+garde d'écran invalidé en fin de capture. Aucune erreur GPU n'est utilisée comme
+synonyme de callback manquant.
+
+Après ces contrôles, trois séquences comparables de 12 s sur l'AORUS Variable
+ont fourni des horodatages positifs pour toutes les soumissions des fenêtres
+centrales (2 s par plateau). Aucun Instruments, export ou contrôle visuel pendant
+ces trois séquences ; même binaire, dessin, couche AppKit et trois drawables.
+
+| Consigne | Attendre le GPU puis `present` | Présentation par command buffer | Durée minimale native |
+| ---: | ---: | ---: | ---: |
+| 60 FPS | 60,19 | 60,03 | 54,65 |
+| 90 FPS | 89,83 | 90,00 | 82,07 |
+| 120 FPS | 120,02 | 119,97 | 115,01 |
+| 90 FPS | 89,95 | 90,09 | 80,93 |
+
+Cadences en événements de présentation/s, pas réponse physique des pixels.
+Dans le plateau 120 FPS, l'acquisition moyenne prend environ 0,015 ms avec les
+deux premières méthodes, contre 8,63 ms avec la durée minimale qui régule
+volontairement la boucle. Cette dernière utilise ici 1/FPS, pas l'algorithme
+GPU moyen d'Andy : le tableau ne compare pas directement son client au nôtre.
+
+À 120 FPS, les intervalles p95/p99 sont 9,60/10,01 ms après attente GPU,
+9,49/12,51 ms par command buffer et 12,51/15,74 ms avec durée minimale.
+Les moyennes correctes ne signifient donc pas une absence de variations :
+le banc est une référence de débit court, pas une qualification de fluidité.
+
+Trois contrôles supplémentaires de 12 s rapprochent le banc du client :
+
+| Variante du contrôle après attente GPU | Cadence confirmée au plateau 120 | Acquisition moyenne |
+| --- | ---: | ---: |
+| Couche AppKit, Rec.709, trois surfaces | 120,06 FPS | 0,015 ms |
+| Même contrôle, deux surfaces | 103,32 FPS | 8,62 ms |
+| Fenêtre et vue Metal SDL, Rec.709, trois surfaces | 106,44 FPS | 8,13 ms |
+
+Ces trois contrôles ont des retours de présentation complets et terminent
+normalement. Le contrôle SDL remplace ensemble la fenêtre et la vue Metal ;
+il n'isole pas encore laquelle de leurs propriétés explique l'écart. Ce sont
+des essais uniques, non une preuve statistique de régression SDL. Le profil
+Rec.709 seul ne reproduit pas le plafond ; deux surfaces font réapparaître de
+la pression, mais trois surfaces n'avaient pas corrigé le client réel. Il faut
+donc examiner la combinaison fenêtre/couche et ordonnanceur vidéo, pas promouvoir
+automatiquement un pool plus grand ou supprimer l'attente GPU.
+
+**Le plafond de 62–63 FPS n'est donc pas intrinsèque à Metal ou à cet écran,
+et attendre la complétion GPU avant `present` ne suffit pas à le provoquer.**
+Le blocage d'acquisition observé dans Moonlight reste réel dans ses captures,
+mais l'attribuer à ce seul ordre d'appels était prématuré. Les essais courts
+ne qualifient ni l'endurance ni la latence du flux ; aucun changement de rendu
+de production n'est justifié par la seule suppression de l'attente GPU.
+
+Les captures et variantes locales sont conservées sous
+`.runtime/surface-isolation-20261003/`, avec versions des références et sommes
+de contrôle, hors Git. Les nouveaux champs du banc distinguent échéance absente,
+enregistrement d'une demande et présentation ; un test de non-régression empêche
+de fabriquer des retards à partir des échéances nulles des boucles indépendantes.
+Le banc final compile et sa signature passe la vérification ; cinq tests du
+banc et quatre tests de corrélation du pipeline passent. Le client de production
+est inchangé. Le mode externe 240 Hz fixe et le secteur Économie d'énergie sont
+restaurés ; la batterie reste Automatique. Aucun essai ni changement Windows
+n'a été réalisé pendant cette isolation locale.

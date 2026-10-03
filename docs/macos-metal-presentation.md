@@ -19,7 +19,8 @@ those changes. Pausing suspends the refresh request, and fallback/teardown
 invalidates it. Tested minimum-duration and explicit phase-target variants
 increased latency and/or dropped frames, so they are not retained.
 Continuously adaptive displays use synchronized `present` after the worker's
-hold. They remain untested in this internal-display phase.
+hold. The subsequent external-display trials are recorded in the roadmap;
+they have not qualified throughput or smoothness.
 
 The adaptive layer owns at most two drawables (the fixed control uses three). This does not add a queue of decoded
 video frames. Acquisition uses Apple's timeout-enabled `nextDrawable` (the
@@ -130,9 +131,41 @@ after the estimated presentation time. GPU success alone is not proof of
 display. `decoder_us` and RTP are zero: this probe has no video decoder/source.
 Early prototypes using immediate `present` after `commit`, or an `MTKView`,
 are not reference controls for renderer decisions.
-The archived longer trials used a slowly changing clear color; the final
-moving-bar version received a five-second functional smoke check only. Do not
-claim its performance was qualified from those earlier captures.
+The archived earlier trials used a slowly changing clear color. Later moving-bar
+trials are recorded in the roadmap and have not qualified performance; do not
+transfer results between these controls.
+
+For short surface-lifetime isolation, `command`, `minimum` and `completed`
+replace the last `metal` argument. They run a separate worker without any
+native display link and share the same encoder and presentation observers:
+
+- `command` queues `presentDrawable:` before committing, with a CPU rate limit.
+- `minimum` queues `presentDrawable:afterMinimumDuration:` and lets Metal pace.
+- `completed` waits up to 50 ms for GPU completion, then calls `present`, with
+  the same CPU rate limit as `command`. It reproduces the production ordering,
+  without video decoding or the shared worker's buffering.
+
+These modes accept only the placeholder latency `1` and reject `timed`.
+Each frame drains its own autorelease pool. AppKit display/visibility checks
+stay on the main thread; the worker joins before teardown. With FPS `0`, their
+short cycle is 60/90/120/90, three seconds per phase (unlike the older display-link
+cycle). A 12-second trial plus the three-second fullscreen transition suffices
+for this diagnostic, not for endurance qualification:
+
+```sh
+METAL_PROBE_DISPLAY_ID=5 \
+  "build/tests-macos/Metal Cadence Probe.app/Contents/MacOS/metal-cadence-probe" \
+  0 12 "$PWD/.runtime/short-variable.csv" 1 fullscreen minimum
+```
+
+Use the current CoreGraphics display ID rather than assuming `5` on another
+machine. `acquire_start_s`, `acquired_s` and `drawable_id` expose acquisition
+and reuse. Worker modes have no display-link deadline/expected timestamp;
+those fields are zero, and the analyzer excludes them from lateness statistics.
+`presentation_enqueue_s` is a command-buffer API enqueue observation, distinct
+from the actual `present_requested_s` recorded by direct/scheduled calls.
+Neither is a display event. Zero `presentedTime` callbacks prevent a cadence
+claim, even with successful GPU work and a visible test image.
 
 `MOONLIGHT_METAL_LAYER_DIAGNOSTICS=1` logs the client layer's geometry,
 transforms and rasterization flags at initialization. It neither changes those
