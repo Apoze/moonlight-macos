@@ -602,7 +602,87 @@ La validation d'un **flux** variable court reste ouverte : elle doit commencer
 par vérifier les intervalles RTP effectivement reçus, avant de comparer les
 présentations ou de régler le contrôleur. Un compteur de dessin seul ne suffit pas.
 
-### Vérifications du correctif
+### Reprise après déverrouillage : contrôle local court
+
+Deux nouveaux contrôles AppKit/Metal de 12 s, même binaire Rec.709 et écran
+AORUS ID 5 en Variable, secteur Automatique, retrouvent respectivement
+60,01 / 89,97 / 121,19 / 89,96 puis 60,06 / 90,02 / 109,50 / 89,98
+présentations/s dans les fenêtres centrales des paliers 60/90/120/90.
+Toutes les acquisitions de ces fenêtres ont un callback positif, sans perte
+de visibilité ou d'activité. Le premier contrôle conserve la session de contrôle
+d'interface ; le second suit sa réinitialisation. Celle-ci ne prouve pas l'arrêt
+d'une capture système et ne montre aucun bénéfice dans ces deux essais.
+Le résultat antérieur proche de 83 événements/s n'est donc pas un plafond
+matériel constant ; ni sa cause ni celle de la variation restante ne sont isolées.
+Ces contrôles synthétiques n'incluent ni réseau ni décodeur vidéo.
+
+Une assertion `caffeinate -diu -t 3600` maintient temporairement le Mac éveillé
+pendant la reprise, à la demande de l'utilisateur. Elle ne modifie aucun réglage
+permanent d'authentification ou d'alimentation. Les données sont conservées sous
+`appkit-cua-active` et `appkit-cua-reset` dans le dossier de campagne ignoré.
+
+### Source DXGI courte : cadence source correcte, flux encore fixe
+
+Le banc D3D11/DXGI utilise flip-discard, deux buffers, une latence maximale
+de 1, `Present(0, ALLOW_TEARING)` et des échéances QPC absolues. Le lancement
+G3 du 3 octobre à 19:52:02.466 UTC dure 12,00001 s sur DISPLAY10 vérifié.
+Les appels Present réussis sont exactement 180/270/360/270 pour les quatre
+paliers de trois secondes 60/90/120/90, sans créneau manqué. Leur retard
+p95 reste inférieur à 0,327 ms et leur maximum à 0,773 ms. Ce sont des
+soumissions CPU réussies, pas des preuves du scanout Windows.
+
+G1 et G2 avaient été annulés avant toute animation par le garde-fou de focus.
+Le banc a été corrigé pour présenter une image d'attente, exposer sa fenêtre
+avec `WS_EX_APPWINDOW` et attendre Espace après activation explicite. G3
+confirme son ouverture, son focus et sa fermeture automatique. La cause exacte
+du filtrage des anciennes fenêtres par l'outil de contrôle n'est pas prouvée.
+
+Sur le Mac, écran AORUS ID 5, plein écran natif et mode Variable confirmés :
+
+| Source demandée | Appels Present source/s | Images reçues/s | Intervalle RTP moyen | Présentations Metal/s |
+| --- | ---: | ---: | ---: | ---: |
+| 60 | 60 | 120,5 | 8,334 ms | 89,18 |
+| 90 | 90 | 120 | 8,331 ms | 108,30 |
+| 120 | 120 | 120 | 8,327 ms | 89,45 |
+| 90 | 90 | 120 | 8,333 ms | 96,33 |
+
+Fenêtres centrales de 2 s ; alignement des horloges civiles sans mesure de
+l'offset entre machines. Tous les callbacks de présentation du Mac sont
+positifs dans ces fenêtres. Le p99 des intervalles est 24,17 / 16,42 / 16,74 /
+16,70 ms. Le replay exact de la trace passe et la fermeture du client retourne 0.
+
+Le flux reçu reste donc fixe, même avec cette source GPU correctement cadencée.
+Ce contrôle ne qualifie pas le suivi VRR variable. La prochaine investigation
+doit localiser la production de cette cadence dans la capture, l'encodage et
+les horodatages du serveur ; modifier le contrôleur client sur cette seule
+base ne permettrait pas de résoudre cette absence de variabilité. L'identité
+visuelle des images n'est pas décodée ici : ne pas affirmer qu'il s'agit de
+duplications exactes sur la seule cadence RTP.
+
+Sources et exports Windows : dossier de vérification `vrr/dxgi-source`.
+Captures Mac : `ours-dxgi-variable-g3*`, synthèse source transmise par le helper
+et manifeste SHA256 dans `.runtime/window-isolation-20261003/`.
+
+L'inspection Windows retrouve ensuite le journal du helper WGC : une fenêtre
+de 15,0152 s terminant à 21:52:16.729 heure locale, qui englobe G3, rapporte
+583,743 captures/s et 314,482 publications/s. La fenêtre précédente, avant
+l'animation, rapporte déjà 571,436 et 312,225. La capture du bureau fournit donc
+bien plus d'événements que les appels Present du banc ; le prélèvement limité
+à 120 explique la cadence reçue sans supposer un simple réétiquetage RTP.
+Le code du helper incrémente son ID à chaque publication sans comparaison des
+pixels. Cela ne prouve toujours pas que les contenus sont identiques, ni quel
+composant du bureau provoque les événements supplémentaires. La configuration
+ne sélectionne pas `wgcc`, le mode de répétition explicite : il n'est pas retenu
+comme cause. Journal conservé côté Windows sous `G3-wgc-helper.log`.
+
+Une comparaison DDX a été préparée, mais sa première tentative de configuration
+a échoué en écriture sous Program Files. Le hash du fichier d'origine est resté
+identique. La connexion Mac ouverte sur une annonce prématurée de réussite a
+été fermée normalement, sans lancement du banc : ce G4 n'est pas un résultat
+DDX et doit être exclu. Toute reprise exige de vérifier la méthode de capture
+effectivement sélectionnée avant le départ du banc.
+
+### Vérifications et restauration
 
 Le bundle ARM64 final est reconstruit, déployé dans le bundle de développement
 et sa signature vérifiée. Sept suites C++, neuf tests Python, le replay exact
