@@ -4,6 +4,12 @@ Statut : en cours, aucune qualification de fluidité ou de latence physique.
 Base de comparaison : PR #1, commit 0a02a249. Les captures et profils restent
 dans `.runtime`, hors Git. L'écran externe et PyroWave suivent cette validation.
 
+Priorité précisée par l'utilisateur : viser un client fiable et des gains
+démontrables, pas une perfection du système. Les variantes de présentation
+sans gain reproductible sont arrêtées. Une nouvelle campagne nécessite une
+hypothèse précise et un contrôle comparable ; les contraintes Wi-Fi/macOS
+ne justifient pas à elles seules une réécriture du moteur de rendu.
+
 ## Ordre de travail
 
 - [x] Relecture des contrats du worker, des horloges et de la présentation Metal.
@@ -20,7 +26,8 @@ dans `.runtime`, hors Git. L'écran externe et PyroWave suivent cette validation
   mesures. Conserver le code de rendu commun et une politique Adaptive-Sync distincte.
 - [ ] Comparaisons répétées 60/120 FPS puis 80/100/116 et cadence variable.
 - [ ] Stabilité prolongée et transitions : plein écran, réduction, reconnexion,
-  veille/reprise, mode d'énergie et réseau dégradé.
+  mode d'énergie Mac et réseau dégradé. Aucune mise en veille, extinction ou
+  modification d'alimentation du PC Windows n'est autorisée.
 - [ ] Mesure finale avec les outils logiciels des deux ordinateurs uniquement,
   conformément au choix utilisateur. La réponse physique des pixels est hors
   périmètre ; ne pas présenter les événements macOS comme une mesure optique.
@@ -144,3 +151,78 @@ Handoff et le mode secteur Économie d'énergie initial ont été restaurés. La
 scène Windows est arrêtée, le serveur HTTP de test fermé et Vibepollo libre.
 Les fichiers de mesure sont conservés. La validation globale VRR, les essais
 longs, l'écran externe et PyroWave restent à effectuer.
+
+## Diagnostic natif complémentaire — 3 octobre, après 18 h
+
+Les captures Instruments du client et d'un banc Metal local montrent un refus
+du chemin « Direct to Display » avec la raison « layer geometry isn't defined
+in screen space ». La suggestion générique de désactiver `shouldRasterize`
+n'explique pas le résultat : la propriété est déjà fausse et les transformations
+de couche inspectées sont identitaires. Désactiver temporairement les Spaces
+plein écran de SDL n'a pas supprimé ce refus. Il ne constitue pas, à lui seul,
+la preuve de la cause des irrégularités. Aucun changement de politique plein
+écran n'est conservé dans le client.
+
+Une capture ScreenCaptureKit continue était observée pendant les premiers
+essais. L'utilisateur a ensuite fermé sa connexion RDP ; les relevés `replayd`
+suivants ne montrent plus les messages de santé de cette capture. Cela ne
+prouve ni son origine ni une amélioration causale. L'état thermique des nouveaux
+essais est `fair` (1), secteur Automatique, fenêtre active et visible sur la
+dalle intégrée. Ne pas comparer ces essais à un contrôle thermique nominal.
+
+Les premiers prototypes du banc local utilisaient une présentation immédiate
+après `commit`, qui peut devancer la programmation GPU, puis un `MTKView`
+susceptible d'interagir avec le cycle des surfaces. Ils restent archivés mais
+sont exclus comme référence pour choisir l'architecture du client. Le banc
+retenu utilise une vue AppKit à couche Metal et demande la présentation depuis
+le callback de programmation du command buffer, conformément au contrat
+de `MTLCommandBuffer.presentDrawable:`. Le chemin VRR du client attend déjà
+la complétion GPU avant de présenter et n'a pas ce défaut du banc.
+
+### Comparaison réelle à 60 images/s
+
+Deux essais HEVC 1920×1200, 30 Mbit/s, négociation serveur VRR identique,
+fenêtres de 30 s après 20 s de source animée. Le rendu de référence est choisi
+par `MOONLIGHT_METAL_FIXED_CONTROL=1`, sans modifier le profil enregistré.
+
+| Chemin local | Images soumises | Présentations confirmées | Décodage → présentation, moyenne / p95 |
+| --- | ---: | ---: | ---: |
+| VRR partagé, 18:29:08.230–18:29:38.230 | 1 800 | 1 600 (88,89 %) | 44,92 / 47,30 ms |
+| Référence Metal, 18:33:33.653–18:34:03.653 | 1 094 | 1 094 (100 %) | 33,21 / 43,18 ms |
+
+Ces essais ne qualifient aucun des deux chemins : le premier a des observations
+manquantes, le second ne présente qu'environ 36,46 images/s. Les latences portent
+uniquement sur les images confirmées et ne prouvent donc pas un avantage global
+du second. La source Windows confirme 1 800 images dans chacune des deux fenêtres,
+aucun créneau sauté et un intervalle maximum d'environ 19 ms.
+
+Dans le premier essai, les 1 800 images arrivent au pacer sans trou d'identifiant,
+mais 45 intervalles de réception dépassent 40 ms, jusqu'à 87,73 ms. Le décodage
+moyen est de 1,90 ms. Sur les 200 présentations non confirmées, 112 appartiennent
+aux 100 ms suivant une longue pause de réception ; 88 sont hors de cette fenêtre.
+Cette corrélation partielle ne suffit pas à attribuer toutes les anomalies au
+réseau. Le replay exact de cette capture passe. Les fenêtres PC/Mac utilisent
+une corrélation horloge monotone/heure murale côté Mac, sans mesure de l'écart
+des horloges entre machines ; aucune latence PC→Mac n'en est déduite.
+
+Les messages de capture ScreenCaptureKit réapparaissent lors du contrôle visuel
+du client. Nos outils peuvent donc perturber les conditions de mesure. Les
+essais natifs suivants, sans contrôle visuel, ne montrent plus ces messages,
+mais les variantes CADisplayLink immédiate et temporisée conservent des
+intervalles irréguliers. Elles ne sont pas intégrées au client. Les essais
+historiques du banc à couleur presque uniforme sont distincts du banc final
+à barre mobile, validé fonctionnellement seulement.
+
+Captures natives, conservées hors Git :
+- `rdpclosed-real60-16856-1791045061708.csv`, SHA256
+  `26e9ca007f533c892546718811a490cccff0eb273d138fefb3786793b572008c`.
+- `rdpclosed-fixed60-17163-1791045330374.csv`, SHA256
+  `58f7de0cc77bf0793a4d0a0ab68c4cb9866f6a969ec234e45a08eaf8dc5f87ff`.
+
+Les mesures répétitives sont closes pour cette étape. Le mode secteur initial
+Économie d'énergie du Mac est restauré, le mode batterie Performance inchangé.
+Le PC Windows est resté allumé, sans modification d'alimentation, et Vibepollo
+est libre. Les corrections de sécurité des surfaces et de complétion GPU restent
+acquises ; la qualification globale VRR et une optimisation ProMotion démontrée
+restent ouvertes. Ne pas présenter les limites observées comme définitivement
+incorrigibles, ni passer à PyroWave en prétendant la validation VRR terminée.

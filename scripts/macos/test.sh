@@ -23,6 +23,7 @@ for index in "${!projects[@]}"; do
 done
 
 python3 "$ROOT/tests/vrr/test_metal_pipeline.py"
+python3 "$ROOT/tests/macos/test_cadence_probe.py"
 "$ROOT/build/tests-macos/replay/vrrreplay" "$MOONLIGHT_VRR_TEST_EXPORT_COMMAND_BUFFER_TRACE" \
     --require-exact-baseline --output "$ROOT/build/tests-macos/command-buffer-replay.json"
 echo "PASS: command-buffer present/cancel exact replay"

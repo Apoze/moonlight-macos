@@ -80,6 +80,62 @@ With less than 99% usable presentation timestamps, the analysis marks cadence
 unrepresentative; the rate of available events must not be called display FPS.
 Latency quantiles then concern only the observed subset.
 
+### Standalone native control
+
+`tests/macos/metal-cadence-probe.mm` isolates native presentation from the
+network, decoder and shared VRR worker. It creates a Metal-backed AppKit view
+on the built-in panel, checks containment and mirror state, and renders a
+moving cyan bar. `CAMetalDisplayLink` supplies every drawable by default;
+the command buffer's scheduled handler calls `present` and records its time.
+GPU completion records status and execution timestamps without blocking the
+render loop. It writes the bounded in-memory samples only after the trial.
+
+```sh
+bash scripts/macos/build-cadence-probe.sh
+"build/tests-macos/Metal Cadence Probe.app/Contents/MacOS/metal-cadence-probe" \
+  60 45 "$PWD/.runtime/builtin/metal-tests/native-control.csv" 1
+python3 scripts/macos/analyze-cadence-probe.py \
+  .runtime/builtin/metal-tests/native-control.csv --warmup 10 --duration 30
+```
+
+Supported rates are 60 and 120; duration is 5–120 seconds. The optional fourth
+argument is `preferredFrameLatency` (1 or 2), followed optionally by `fullscreen`
+for a native macOS fullscreen Space instead of the default borderless window.
+The latter waits three seconds for the transition and refuses an unsuccessful
+transition. Neither mode changes the system display mode or Windows state.
+Record the executable hash and stderr log (screen identity, power, thermal
+state and backing scale) for each trial. No build or Instruments capture should
+run during a cadence baseline. Instruments runs are separate attribution tests.
+
+For clock isolation, pass `window` or `fullscreen`, then `screen` to use
+`NSScreen`'s `CADisplayLink` with `nextDrawable` instead. This mode never creates
+a `CAMetalDisplayLink` and accepts only the placeholder latency argument `1`.
+One final `timed` argument schedules at the screen link's target timestamp;
+it is rejected with the Metal display link because that API forbids timed
+presentation. Both modes share the encoder and completion observers. These
+are diagnostic controls, not additional production rendering policies.
+
+The probe analyzer distinguishes a zero presentation timestamp from a pending
+callback, GPU failure, CPU presentation-request lateness and GPU completion
+after the estimated presentation time. GPU success alone is not proof of
+display. `decoder_us` and RTP are zero: this probe has no video decoder/source.
+Early prototypes using immediate `present` after `commit`, or an `MTKView`,
+are not reference controls for renderer decisions.
+The archived longer trials used a slowly changing clear color; the final
+moving-bar version received a five-second functional smoke check only. Do not
+claim its performance was qualified from those earlier captures.
+
+`MOONLIGHT_METAL_LAYER_DIAGNOSTICS=1` logs the client layer's geometry,
+transforms and rasterization flags at initialization. It neither changes those
+properties nor establishes eligibility for Direct to Display on its own.
+
+The API contracts are documented in Apple's
+[drawable presentation](https://developer.apple.com/documentation/metal/mtldrawable/present()),
+[display-link deadline](https://developer.apple.com/documentation/quartzcore/cametaldisplaylink/update/targettimestamp)
+and [GPU timing](https://developer.apple.com/documentation/metal/mtlcommandbuffer/gpustarttime)
+references. The production VRR path already completes rendering before direct
+presentation; it does not use the early probe's scheduling order.
+
 For a controlled comparison, set `MOONLIGHT_METAL_FIXED_CONTROL=1` on the same
 command, still with `--vrr`. This uses the fixed Metal display-link path locally
 while retaining `clientVrrRequested=1` on the server. Comparing against `--no-vrr`

@@ -779,6 +779,20 @@ public:
 
             m_MetalLayer = (CAMetalLayer*)SDL_Metal_GetLayer(m_MetalView);
 
+            if (qEnvironmentVariableIntValue("MOONLIGHT_METAL_LAYER_DIAGNOSTICS") == 1) {
+                unsigned depth = 0;
+                for (CALayer* layer = m_MetalLayer; layer && depth < 12; layer = layer.superlayer, ++depth) {
+                    const CATransform3D t = layer.transform;
+                    NSLog(@"Metal layer[%u] %@ frame=%@ bounds=%@ position=%@ anchor=%@ scale=%.2f raster=%d rasterScale=%.2f opaque=%d opacity=%.2f flipped=%d masks=%d transformIdentity=%d sublayerIdentity=%d diagonal=%.2f,%.2f,%.2f translation=%.2f,%.2f,%.2f",
+                        depth, NSStringFromClass(layer.class), NSStringFromRect(layer.frame),
+                        NSStringFromRect(layer.bounds), NSStringFromPoint(layer.position),
+                        NSStringFromPoint(layer.anchorPoint), layer.contentsScale, layer.shouldRasterize,
+                        layer.rasterizationScale, layer.opaque, layer.opacity, layer.geometryFlipped,
+                        layer.masksToBounds, CATransform3DIsIdentity(t), CATransform3DIsIdentity(layer.sublayerTransform),
+                        t.m11, t.m22, t.m33, t.m41, t.m42, t.m43);
+                }
+            }
+
             // Choose a device
             m_MetalLayer.device = device;
 

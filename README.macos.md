@@ -81,7 +81,8 @@ Les sept suites déterministes couvrent le contrôleur partagé, ses politiques,
 le worker, les configurations de replay, les observations Metal et leurs conversions
 d’horloge. Les traces réelles passent aussi le replay exact. Le test de complétion GPU
 couvre présentation et annulation, avec un replay exact automatisé ; les
-quatre tests Python vérifient la corrélation des étapes du pipeline.
+huit tests Python vérifient la corrélation des étapes du pipeline et la
+distinction entre complétion GPU et présentation dans le banc natif.
 Voir [la roadmap et les résultats récents](docs/macos-vrr-roadmap.md).
 Cela ne valide pas à lui seul le scanout physique ou la latence clic-à-photon.
 
