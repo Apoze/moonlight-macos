@@ -682,6 +682,20 @@ identique. La connexion Mac ouverte sur une annonce prématurée de réussite a
 DDX et doit être exclu. Toute reprise exige de vérifier la méthode de capture
 effectivement sélectionnée avant le départ du banc.
 
+Références serveur inspectées, tag 2.0.0, commit
+`8a8c4b03a280ab9f567beb380110abb80f5220b8` :
+
+- [Publication WGC](https://github.com/Nonary/Vibepollo/blob/8a8c4b03a280ab9f567beb380110abb80f5220b8/tools/sunshine_wgc_capture.cpp#L981) : nouvel ID par publication ; les événements sont consommés aux lignes 1312–1370.
+- [Prélèvement de capture](https://github.com/Nonary/Vibepollo/blob/8a8c4b03a280ab9f567beb380110abb80f5220b8/src/platform/windows/display_base.cpp#L545) : grille limitée à la cadence client ; sélection DDX aux lignes 1765–1781.
+- [Filtrage Desktop Duplication](https://github.com/Nonary/Vibepollo/blob/8a8c4b03a280ab9f567beb380110abb80f5220b8/src/platform/windows/display_vram.cpp#L2440) : livraison selon mise à jour de présentation/curseur, à vérifier en pratique sur cette machine.
+
+L'interface officielle Windows est ensuite bloquée par l'avertissement de
+certificat du navigateur. Son traitement est laissé à l'utilisateur ; aucun
+contournement, changement serveur ou essai DDX n'a été effectué. La configuration
+initiale et la sauvegarde restent identiques. Les réglages Mac sont restaurés
+en attendant cette intervention. L'assertion temporaire de maintien éveillé
+reste active, avec expiration automatique le 3 octobre à 22:39:50 heure locale.
+
 ### Vérifications et restauration
 
 Le bundle ARM64 final est reconstruit, déployé dans le bundle de développement
