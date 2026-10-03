@@ -764,6 +764,15 @@ bool Session::initialize(QQuickWindow* qtWindow)
             }
         }
 
+        // Select this before SDL creates any window: sdl2-compat caches the
+        // fullscreen policy, so changing the hint in the later presentation
+        // snapshot cannot repair it. VRR already overrides the session's window
+        // mode; its native fullscreen requirement also overrides legacy notch
+        // coverage. The stored user preference remains unchanged.
+        if (m_Preferences->enableVrr) {
+            shouldUseFullScreenSpaces = true;
+        }
+
         // Using modesetting on modern versions of macOS is extremely unreliable
         // and leads to hangs, deadlocks, and other nasty stuff. The only time
         // people seem to use it is to get the full screen on notched Macs,

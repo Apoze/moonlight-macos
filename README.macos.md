@@ -13,9 +13,10 @@ validées.** Voir les mesures et limites dans le rapport ci-dessous. Le profil
 de référence reste inchangé, VRR désactivé.
 
 La branche `macos/metal-adaptive-presentation` ajoute le présentateur Metal
-au contrôleur VRR de Nonary, avec demande de fréquence ProMotion indépendante du rendu,
-protection des surfaces GPU et mesures des présentations rapportées par macOS.
-Le rendu fixe reste disponible. PyroWave n'est pas ajouté.
+au contrôleur VRR de Nonary, avec protection des surfaces GPU et mesures des
+présentations rapportées par macOS. L’Adaptive-Sync exige le plein écran natif.
+ProMotion conserve le chemin Metal fixe : son ordonnancement par le worker VRR
+a montré une cadence irrégulière. Le rendu fixe reste disponible. PyroWave n'est pas ajouté.
 Voir [la conception et le protocole](docs/macos-metal-presentation.md).
 
 Premier matériel ciblé : MacBook Pro M5 Pro, écran intégré Liquid Retina XDR
@@ -82,7 +83,7 @@ Les sept suites déterministes couvrent le contrôleur partagé, ses politiques,
 le worker, les configurations de replay, les observations Metal et leurs conversions
 d’horloge. Les traces réelles passent aussi le replay exact. Le test de complétion GPU
 couvre présentation et annulation, avec un replay exact automatisé ; les
-huit tests Python vérifient la corrélation des étapes du pipeline et la
+neuf tests Python vérifient la corrélation des étapes du pipeline et la
 distinction entre complétion GPU et présentation dans le banc natif.
 Voir [la roadmap et les résultats récents](docs/macos-vrr-roadmap.md).
 Cela ne valide pas à lui seul le scanout physique ou la latence clic-à-photon.

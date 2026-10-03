@@ -23,7 +23,6 @@
 #import <dispatch/dispatch.h>
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
-#include "metaldisplaylink.h"
 
 extern "C" {
     #include <libavutil/pixdesc.h>
@@ -99,7 +98,6 @@ public:
         // The pacing worker has joined before renderer destruction. Adaptive
         // callbacks retain only independent state and frame resources.
         cancelFrame();
-        m_DisplayRefreshRequest.stop();
         stopDisplayLink();
         savePresentationTrace();
         av_frame_free(&m_LatestUnrenderedFrame);
@@ -700,7 +698,6 @@ public:
         int err;
 
         m_Window = params->window;
-        m_DisplayRefresh = params->vrrDisplayRefreshHz;
         if (!params->testOnly) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Metal power policy: low_power=%d thermal_state=%ld",
                 NSProcessInfo.processInfo.lowPowerModeEnabled, (long)NSProcessInfo.processInfo.thermalState);
@@ -811,13 +808,20 @@ public:
             SDL_SysWMinfo info;
             SDL_VERSION(&info.version);
             if (SDL_GetWindowWMInfo(m_Window, &info)) {
-                NSScreen* screen = info.info.cocoa.window.screen;
+                NSWindow* window = info.info.cocoa.window;
+                NSScreen* screen = window.screen;
+                m_NativeFullscreen = (window.styleMask & NSWindowStyleMaskFullScreen) != 0;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                            "Metal output: display=%u built_in=%d native_fullscreen=%d",
+                            [screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue],
+                            CGDisplayIsBuiltin([screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue]),
+                            m_NativeFullscreen);
                 m_AdaptiveDisplay = screen && screen.minimumRefreshInterval > 0 &&
                     screen.maximumRefreshInterval > screen.minimumRefreshInterval;
                 m_ProMotion = screen && screen.displayUpdateGranularity > 0;
-                if (m_VrrRequested && m_AdaptiveDisplay && m_ProMotion &&
-                    !m_DisplayRefreshRequest.start(screen, m_DisplayRefresh)) {
-                    m_AdaptiveDisplay = false;
+                if (m_VrrRequested && m_ProMotion) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                                "ProMotion uses OS-selected discrete cadence; retaining native fixed presentation");
                 }
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Metal display: min/max %.3f/%.3f ms, granularity %.3f ms, %s; physical scanout unverified",
@@ -826,13 +830,11 @@ public:
             }
             if (checkSupport() == VrrFallbackReason::NoFallback) {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "Metal adaptive presenter: shared VRR worker, synchronized presentation, ProMotion refresh request, bounded drawable pool; %s",
-                    m_ProMotion ? "ProMotion cadence is quantized by macOS" : "Adaptive-Sync scheduling requested");
+                    "Metal adaptive presenter: shared VRR worker, synchronized presentation, bounded drawable pool; Adaptive-Sync scheduling requested");
             }
             else {
                 // Eligibility rejection must retain the ordinary display link.
                 m_VrrRequested = false;
-                m_DisplayRefreshRequest.stop();
                 m_MetalLayer.maximumDrawableCount = 3;
             }
         }
@@ -851,16 +853,14 @@ public:
     VrrFallbackReason checkSupport() const override
     {
         if (!m_VrrRequested) return VrrFallbackReason::UnsupportedRenderer;
-        if (!m_HwAccel || !m_MetalLayer || !m_MetalLayer.displaySyncEnabled || !m_AdaptiveDisplay)
+        if (!m_HwAccel || !m_MetalLayer || !m_MetalLayer.displaySyncEnabled || !m_AdaptiveDisplay ||
+            m_ProMotion || !m_NativeFullscreen)
             return VrrFallbackReason::AdaptivePresentationUnavailable;
-        if (m_ProMotion) {
-            if (@available(macOS 14, *)) {} else { return VrrFallbackReason::AdaptivePresentationUnavailable; }
-        }
         return VrrFallbackReason::NoFallback;
     }
 
     // Synchronized Metal presents always honor non-tearing requests. macOS
-    // owns the latch cadence, including ProMotion's discrete refresh choices.
+    // owns the latch cadence; ProMotion uses the separate fixed path.
     bool canLatchAdaptivePresent() const override { return true; }
 
     VrrPrepareResult prepareFrame(AVFrame* frame, uint64_t) override
@@ -960,14 +960,12 @@ public:
     void setSuspended(bool suspended) override
     {
         m_VrrSuspended = suspended;
-        m_DisplayRefreshRequest.setPaused(suspended);
         if (suspended) cancelFrame();
     }
 
     bool restoreFixedPresentation(VrrFallbackReason) override
     {
         m_VrrRequested = false;
-        m_DisplayRefreshRequest.stop();
         m_MetalLayer.maximumDrawableCount = 3;
         return true;
     }
@@ -993,11 +991,8 @@ public:
         record.prepareUs = prepared;
         record.submitUs = clock.beforeUs;
         record.submitMedia = clock.mediaSeconds;
-        const auto tick = m_DisplayRefreshRequest.latest();
-        record.displaySequence = tick.sequence;
-        record.displayTimestamp = tick.timestamp;
-        record.displayTarget = tick.target;
-        record.displayObserved = tick.observed;
+        // Legacy display-link observation fields stay zero when no independent
+        // refresh request runs; retain the CSV schema for older captures.
         const auto serial = state->submit(record);
         [drawable addPresentedHandler:^(id<MTLDrawable> shown) {
             state->presented(serial, shown.presentedTime, LiGetMicroseconds(), clock);
@@ -1236,11 +1231,9 @@ public:
 
 private:
     std::recursive_mutex m_RenderStateMutex;
-    MetalDisplayRefresh m_DisplayRefreshRequest;
-    float m_DisplayRefresh = 0;
     bool m_HwAccel;
     bool m_VrrRequested = false, m_VrrSuspended = false;
-    bool m_AdaptiveDisplay = false, m_ProMotion = false;
+    bool m_AdaptiveDisplay = false, m_ProMotion = false, m_NativeFullscreen = false;
     id<CAMetalDrawable> m_PreparedDrawable = nil;
     VrrPresentFeedback m_PreparedFeedback;
     DisplayLinkDelegate* m_DisplayLinkDelegate = nil;

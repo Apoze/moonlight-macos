@@ -8,16 +8,16 @@ constants are changed. Preparation imports the decoded VideoToolbox image,
 renders using the same encoder as fixed presentation, submits GPU work, and
 observes completion with a 50 ms bound. The worker then holds until its target;
 presentation submits the completed drawable with `displaySyncEnabled=YES`.
-On ProMotion, an NSScreen-bound `CADisplayLink` requests the display's maximum
-cadence. Its callback performs no work and holds no renderer pointer. The
-shared worker acquires exclusively through `CAMetalLayer.nextDrawable`; no
-CAMetalDisplayLink is attached to that layer. Presentation uses synchronized
-`present` after the worker's source-timing hold, without another timer or native
-minimum-duration queue. The screen-bound link survives initial color setup and
-later format changes; only the legacy layer-bound display link is stopped for
-those changes. Pausing suspends the refresh request, and fallback/teardown
-invalidates it. Tested minimum-duration and explicit phase-target variants
-increased latency and/or dropped frames, so they are not retained.
+ProMotion reports a discrete, OS-selected cadence. It now retains the native
+fixed Metal presentation path instead of the shared Adaptive-Sync worker: the
+live 60 FPS control exposed large presentation-interval variations with that
+worker. The independent maximum-refresh CADisplayLink request has been removed,
+not left as a second inactive pacing mechanism. The existing CAMetalDisplayLink
+continues to own drawables in the fixed path. Continuous Adaptive-Sync uses
+`CAMetalLayer.nextDrawable` exclusively; no CAMetalDisplayLink owns its layer.
+The worker uses synchronized `present` after its source-timing hold, without
+another timer or native minimum-duration queue. Timing-policy constants are
+unchanged. Measurements and limits of the fallback are recorded in the roadmap.
 Continuously adaptive displays use synchronized `present` after the worker's
 hold. The subsequent external-display trials are recorded in the roadmap;
 they have not qualified throughput or smoothness.
@@ -31,6 +31,15 @@ prepared drawable without displaying it. Source AVFrames and CoreVideo texture
 wrappers remain owned through GPU completion, including after a timeout.
 Completion handlers retain their own resources, never a renderer pointer.
 Size/display transitions recreate the renderer and resample eligibility.
+
+A VRR request selects native macOS fullscreen before any SDL window is created,
+even when the saved window preference selects legacy fullscreen or notch coverage.
+Changing this hint only in the later presentation snapshot is too late with the
+bundled sdl2-compat. Preferences are not persisted by this override. The native
+renderer logs its CoreGraphics display ID, built-in status and fullscreen status.
+Continuous Adaptive-Sync is rejected without a native fullscreen window; fixed
+V-sync fallback remains available. ProMotion is excluded from this worker and uses the fixed Metal
+presentation path. Display/size changes recreate the renderer to resample these facts.
 
 Synchronized Metal presentation honors latch protection without changing
 tearing modes. Native backend ID 4 denotes Metal in the shared trace. Metal's
@@ -273,8 +282,9 @@ Physical pixel response is outside the software-only measurement scope.
 - [Apple: CAMetalDisplayLink](https://developer.apple.com/documentation/quartzcore/cametaldisplaylink)
   supplies pre-acquired drawables. A runtime check on macOS 26.6 rejects
   `presentAfterMinimumDuration` on those drawables; the rejected prototype is
-  excluded from this implementation. `CADisplayLink` keeps refresh requests
-  independent of drawable ownership.
+  excluded from this implementation. The later independent `CADisplayLink`
+  refresh-request experiment was also removed when ProMotion returned to the
+  fixed presentation path.
 - [Nonary PR 3](https://github.com/Nonary/moonlight-qt/pull/3), head `513e5382`:
   reviewed, not cherry-picked. It uses an older preparation contract and waits
   for the display-link callback after the controller's target.

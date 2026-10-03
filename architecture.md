@@ -5,11 +5,12 @@ guard selects the native built-in QScreen, refuses unavailable/mirrored panels,
 and stops a stream that moves to an external display. The macOS adaptive
 presenter now implements IVrrFramePresenter using shared GPU encoding, bounded
 completion, and native presentation callbacks. The shared timing policy is
-unchanged. ProMotion uses a maximum-rate CADisplayLink request independent of drawable
-ownership and nextDrawable acquisition. All adaptive submissions use synchronized
-present after the shared worker target; the adaptive drawable pool is bounded to two.
-The opt-in three-drawable diagnostic is not the production default. CADisplayLink
-observations record the latest native tick without changing the shared policy.
+unchanged. Continuous Adaptive-Sync uses synchronized presentation after the
+shared worker target and a two-drawable pool. The three-drawable diagnostic is
+not the production default. ProMotion now falls back to the original fixed
+Metal path: its discrete OS cadence did not follow the worker regularly in
+live controls. The independent CADisplayLink refresh request was removed.
+Legacy display-tick trace columns remain zero when no observer supplies them.
 Metal completion feedback retains its command-buffer identity, wait outcome and
 conservative commit-to-observation bracket across presentation or cancellation;
 replay validates these without interpreting them as DXGI fences or Vulkan polls.
@@ -17,6 +18,9 @@ The guard creates the video window hidden and verifies the complete native video
 area before showing it, then rechecks during streaming.
 The internal ProMotion panel and an explicitly selected USB-C Adaptive-Sync
 display have been tested separately; neither path is performance-qualified.
+VRR requests select native macOS fullscreen before SDL creates windows. Continuous
+Adaptive-Sync requires the native fullscreen flag; the renderer logs its actual
+CoreGraphics output ID and built-in status. The saved window preference is unchanged.
 The standalone probe now includes short worker-driven surface-lifetime controls,
 without changing production scheduling. OS timestamps do not prove physical VRR. See [Metal design](docs/macos-metal-presentation.md) and
 [README.macos.md](README.macos.md) for the implementation and validation scope.

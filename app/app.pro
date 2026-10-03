@@ -476,12 +476,10 @@ macx {
         builtindisplayguard.mm \
         streaming/video/ffmpeg-renderers/vt_base.mm \
         streaming/video/ffmpeg-renderers/vt_avsamplelayer.mm \
-        streaming/video/ffmpeg-renderers/vt_metal.mm \
-        streaming/video/ffmpeg-renderers/metaldisplaylink.mm
+        streaming/video/ffmpeg-renderers/vt_metal.mm
 
     HEADERS += \
         builtindisplayguard.h \
-        streaming/video/ffmpeg-renderers/metaldisplaylink.h \
         streaming/video/ffmpeg-renderers/metalpresentation.h \
         streaming/video/ffmpeg-renderers/vt.h
 }

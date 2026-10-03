@@ -479,3 +479,134 @@ banc et quatre tests de corrélation du pipeline passent. Le client de productio
 est inchangé. Le mode externe 240 Hz fixe et le secteur Économie d'énergie sont
 restaurés ; la batterie reste Automatique. Aucun essai ni changement Windows
 n'a été réalisé pendant cette isolation locale.
+
+## Décisions et corrections après comparaison des clients — 3 octobre, après 20 h 45
+
+### Fenêtre SDL : réécriture écartée
+
+Quatre contrôles courts sur l'AORUS Variable comparent la vue SDL, une vue Metal
+native ajoutée à la même fenêtre SDL, une vue native remplaçant son contenu et
+le banc AppKit d'origine. Ils terminent normalement sur le CGDisplayID 5,
+3840×2160, secteur Automatique. Au plateau 120, ils présentent respectivement
+77,61 / 83,33 / 81,88 / 82,83 événements/s. Le contrôle natif qui atteignait
+120 auparavant ne le reproduit pas dans cette campagne. Ces essais uniques
+ne prouvent donc pas une cause propre à SDL. Aucun remplacement de fenêtre/vue
+n'est intégré. Un contrôle remplaçant uniquement `present` après complétion par
+`presentAfterMinimumDuration:0` donne 81,34 événements/s : il est aussi écarté.
+
+### Une erreur de sélection du plein écran corrigée
+
+`--display-mode fullscreen` choisissait le mode historique sans Space native.
+La session VRR forçait ensuite `WM_FULLSCREEN_DESKTOP`, mais conservait le hint
+macOS choisi d'après l'ancienne préférence. Le client annonçait ainsi une
+présentation adaptative sans vérifier le drapeau natif. Andy metal-v6 refuse
+explicitement le VRR dans cet état, ce qui a permis d'isoler cette incohérence.
+
+La demande VRR choisit maintenant les Spaces **avant la création des fenêtres
+SDL**, après la politique d'encoche. Une première tentative changeant le hint
+dans le snapshot de présentation était trop tardive avec sdl2-compat ; le
+contrôle réel l'a rejetée. Le code final garde la préférence utilisateur et
+journalise l'identité CoreGraphics, le caractère intégré et le plein écran natif.
+L'Adaptive-Sync continu est refusé si le plein écran natif manque, avec repli
+V-sync. Le cas `fullscreen` est ensuite confirmé `display=5 built_in=0
+native_fullscreen=1`, et le contrôle interne `display=1 built_in=1
+native_fullscreen=1`. Cette correction d'éligibilité ne résout pas le plafond
+externe à elle seule.
+
+### Comparaison réelle avec Andy
+
+Le bundle officiel **metal-v6** est copié uniquement sous `.runtime`, sans
+remplacer une installation utilisateur. Son DMG correspond au SHA256 publié
+`5770e7394a23bb892ece96c3374637527e583897301a5c8ba06dc6bf0254632e`.
+Source du tag : `bbc412fcaa209f69142bfb783b34a250cb0e41d1` ; ne pas confondre
+ce tag avec la branche plus récente inspectée précédemment.
+
+Un observateur local identique des acquisitions `CAMetalLayer.nextDrawable`
+ajoute un callback de présentation dans les deux clients, sans remplacer leurs
+appels de présentation. Sur notre contrôle, 2 262 horodatages positifs coïncident
+exactement avec le journal natif du client après sélection de la bonne couche
+(les identifiants de drawable seuls ne sont pas uniques entre couches).
+Cet observateur ne couvre pas les drawables fournis par CAMetalDisplayLink :
+le repli fixe ci-dessous est analysé avec le journal natif de Moonlight.
+
+Animation Chrome 120 FPS sur Windows, fenêtres centrales de 12 s dans des
+animations d'environ 15 s ; les attentes de connexion/orchestration sont hors
+fenêtre mesurée. Les sources A/B/C exportent chacune 1 440 dessins, aucun créneau
+manqué. Les mesures Mac et Windows sont corrélées par heure murale et une paire
+horloge murale/monotone Mac ; l'écart d'horloge entre machines n'est pas mesuré.
+Les marges de deux secondes évitent les transitions, aucune latence PC→Mac
+n'est déduite.
+
+| Contrôle externe | Acquisitions | Présentations positives | Événements/s | Intervalle p95 / p99 |
+| --- | ---: | ---: | ---: | ---: |
+| Notre A, mode historique non natif | 1 110 | 838 | 69,83 | 37,90 / 59,86 ms |
+| Andy B, plein écran natif, VRR confirmé | 1 015 | 1 015 | 84,62 | 14,29 / 14,99 ms |
+| Notre C, plein écran natif, worker adaptatif | 937 | 937 | 77,96 | 16,12 / 37,54 ms |
+
+Ce n'est pas un A/B isolé du moteur : Andy embarque SDL3 3.4.9, notre client
+3.4.12, leurs protocoles/pacers diffèrent. L'hôte annonce 1000 Hz virtuels pour A,
+480 pour B **et C**, mais seul notre client demande sa politique VRR faible
+latence. Ces fréquences virtuelles ne sont pas le débit vidéo. Les callbacks
+nuls de A ne sont pas convertis en preuve d'images invisibles. Andy plante à
+l'arrêt SIGTERM du lanceur après sa borne de connexion de 120 s, après la
+fenêtre mesurée ; le rapport situe le crash dans Moonlight sur la file principale.
+La causalité et une éventuelle interaction avec l'observateur ne sont pas
+établies. Ce contrôle ne qualifie donc ni sa stabilité, ni une supériorité
+générale ; il n'atteint pas non plus 120 présentations/s ici. Aucun import de
+son pacer n'est retenu.
+
+### ProMotion : retour au chemin natif fixe, gain mesuré
+
+Le worker Adaptive-Sync n'est plus sélectionné pour une dalle à cadence
+discrète (`displayUpdateGranularity > 0`). Le chemin Metal fixe existant est
+conservé, y compris lorsque VRR est demandé. La demande CADisplayLink indépendante
+est supprimée du code et du build, plutôt que laissée inactive. Les anciennes
+colonnes de ticks du CSV sont conservées pour lire les captures historiques,
+et restent nulles lorsqu'aucun observateur ne les renseigne.
+
+Sur l'écran intégré seul, gardé par l'identité native, mêmes dessins Chrome
+60 FPS et fenêtres de 12 s :
+
+| Chemin interne | Présentations positives | Événements/s | Intervalle p95 / p99 / maximum |
+| --- | ---: | ---: | ---: |
+| Worker adaptatif D | 717 / 717 | 59,96 | 50,00 / 75,00 / 83,33 ms |
+| Repli Metal fixe E | 713 / 713 | 59,37 | 25,00 / 25,00 / 29,17 ms |
+
+Les sources D/E consignent 720 dessins sans créneau manqué. Le repli réduit
+nettement les longues variations dans ces contrôles, au prix d'un débit mesuré
+légèrement inférieur ; ce n'est pas une restitution parfaite à 16,67 ms.
+La latence logicielle sortie décodeur→présentation augmente en moyenne de
+28,36 à 34,48 ms (+6,12 ms), p95 de 41,63 à 46,66 ms. Le gain de régularité
+n'est donc pas gratuit et ne constitue pas un optimum de latence.
+Il rejoint les résultats fixes antérieurs et évite d'annoncer du VRR continu
+sur ProMotion. Le plafond externe reste ouvert ; PyroWave n'est pas commencé.
+
+### Source variable courte : contrôle rejeté comme qualification VRR
+
+Le banc WinForms/GDI autonome créé côté Windows a effectivement terminé en
+12,002 s, focus et écran virtuel capturé DISPLAY10 vérifiés. Il dessine
+180/269/322/270 images dans les paliers 60/90/120/90 ; le palier 120 manque donc
+38 dessins. Surtout, le Mac reçoit **120 RTP/s sur chacun des quatre paliers**.
+Les 240 arrivées par fenêtre centrale de 2 s ne constituent pas un flux variable.
+Les présentations mesurées (80,71 / 86,64 / 80,14 / 82,17 événements/s) ne sont
+pas utilisées pour prétendre suivre ces changements de cadence. Le replay exact
+et l'intégrité de cette capture passent ; ils valident la reconstruction du
+worker, pas le protocole source ni sa fluidité.
+
+La première tentative F n'avait produit aucune animation : la connexion avait
+expiré pendant la préparation et le banc a refusé l'écran virtuel disparu.
+F2 a utilisé une borne de connexion plus large, sans allonger les 12 s de dessin.
+Les sources et rapports Windows sont conservés dans le dossier de vérification
+`vrr/native-source`, les captures Mac sous `.runtime/window-isolation-20261003/`.
+La validation d'un **flux** variable court reste ouverte : elle doit commencer
+par vérifier les intervalles RTP effectivement reçus, avant de comparer les
+présentations ou de régler le contrôleur. Un compteur de dessin seul ne suffit pas.
+
+### Vérifications du correctif
+
+Le bundle ARM64 final est reconstruit, déployé dans le bundle de développement
+et sa signature vérifiée. Sept suites C++, neuf tests Python, le replay exact
+du fixture command-buffer et celui de la capture F2 passent. Les journaux, sources
+des variantes, binaires et captures sont conservés avec leurs SHA256 hors Git.
+Le réglage externe 240 Hz fixe et le secteur Économie d'énergie sont restaurés,
+la batterie reste Automatique. Aucun réglage d'alimentation Windows n'est changé.
