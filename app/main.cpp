@@ -14,6 +14,11 @@
 #include <QElapsedTimer>
 #include <QTemporaryFile>
 #include <QRegularExpression>
+#include <QScreen>
+#include <QWindow>
+#ifdef Q_OS_MACOS
+#include "builtindisplayguard.h"
+#endif
 
 #ifdef Q_OS_UNIX
 #include <sys/socket.h>
@@ -1096,6 +1101,20 @@ int main(int argc, char *argv[])
     }
 
     if (hasGUI) {
+        QScreen* testDisplay = nullptr;
+#ifdef Q_OS_MACOS
+        if (BuiltinDisplayGuard::enabled()) {
+            testDisplay = BuiltinDisplayGuard::screen();
+            if (!testDisplay) {
+                qCritical() << "Built-in display guard: an active, unmirrored built-in display is required.";
+                return 2;
+            }
+            qInfo() << "Built-in display guard: target" << testDisplay->name()
+                    << testDisplay->geometry() << testDisplay->refreshRate() << "Hz";
+        }
+#endif
+        engine.rootContext()->setContextProperty("testDisplay", testDisplay);
+        engine.rootContext()->setContextProperty("testDisplayIndex", QGuiApplication::screens().indexOf(testDisplay));
         engine.rootContext()->setContextProperty("initialView", initialView);
         engine.rootContext()->setContextProperty("runConfigChecks", commandLineParserResult == GlobalCommandLineParser::NormalStartRequested);
 
@@ -1103,6 +1122,11 @@ int main(int argc, char *argv[])
         engine.load(QUrl(QStringLiteral("qrc:/gui/main.qml")));
         if (engine.rootObjects().isEmpty())
             return -1;
+#ifdef Q_OS_MACOS
+        if (auto* window = qobject_cast<QWindow*>(engine.rootObjects().first())) {
+            BuiltinDisplayGuard::watch(window);
+        }
+#endif
     }
 
     int err = app.exec();

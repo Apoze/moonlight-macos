@@ -5,6 +5,9 @@
 .vscode/
 build/
 libs/
+.runtime/
+.tools/
+aqtinstall.log
 config.tests/*/.qmake.stash
 config.tests/*/Makefile
 

@@ -1,6 +1,9 @@
 #include "streaming/input/dualsensehaptics.h"
 #include <QNetworkInterface>
 #include <QSysInfo>
+#ifdef Q_OS_MACOS
+#include "builtindisplayguard.h"
+#endif
 #include <QDir>
 #include "session.h"
 #include "settings/streamingpreferences.h"
@@ -2036,6 +2039,14 @@ void Session::interrupt()
 
 void Session::exec()
 {
+#ifdef Q_OS_MACOS
+    if (BuiltinDisplayGuard::enabled() &&
+            (!BuiltinDisplayGuard::screen() || !m_QtWindow ||
+             m_QtWindow->screen() != BuiltinDisplayGuard::screen())) {
+        qWarning() << "Built-in display guard: refusing stream on another display.";
+        m_AsyncConnectionSuccess = false;
+    }
+#endif
     // If the connection failed, clean up and abort the connection.
     if (!m_AsyncConnectionSuccess) {
         delete m_InputHandler;
@@ -2237,6 +2248,14 @@ void Session::exec()
     };
 
     for (;;) {
+#ifdef Q_OS_MACOS
+        if (!BuiltinDisplayGuard::allows(m_Window)) {
+            SDL_HideWindow(m_Window);
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Built-in display guard: stopping stream after display change");
+            goto DispatchDeferredCleanup;
+        }
+#endif
 #if SDL_VERSION_ATLEAST(2, 0, 18) && !defined(STEAM_LINK)
         // SDL 2.0.18 has a proper wait event implementation that uses platform
         // support to block on events rather than polling on Windows, macOS, X11,

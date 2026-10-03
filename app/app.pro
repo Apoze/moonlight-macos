@@ -473,11 +473,13 @@ macx {
     message(VideoToolbox renderer selected)
 
     SOURCES += \
+        builtindisplayguard.mm \
         streaming/video/ffmpeg-renderers/vt_base.mm \
         streaming/video/ffmpeg-renderers/vt_avsamplelayer.mm \
         streaming/video/ffmpeg-renderers/vt_metal.mm
 
     HEADERS += \
+        builtindisplayguard.h \
         streaming/video/ffmpeg-renderers/vt.h
 }
 discord-rpc {

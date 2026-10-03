@@ -1,5 +1,19 @@
 # Moonlight development notes
 
+## This macOS fork
+
+This checkout is the macOS development fork, based on Nonary VRR18. Read
+[README.macos.md](README.macos.md) first. Use the native Mac toolchain and `gh`.
+The Windows machines, shares and deployment paths below describe the inherited
+upstream environment, not this checkout. Do not deploy to them from this project.
+
+Current phase: establish and validate the baseline on the MacBook's built-in
+display only. Keep external-display experiments and PyroWave implementation for
+later explicit phases. Use `scripts/macos/launch-builtin.command`; keep personal
+settings, pairing material and logs in ignored `.runtime/`. Do not publish them.
+Build success and a VRR checkbox do not prove adaptive presentation or physical VRR.
+Do not replace the system Moonlight application or change global display settings.
+
 ## Architecture orientation
 
 At the start of work on streaming, decoding, rendering, VRR, timing, latency,

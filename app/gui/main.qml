@@ -35,6 +35,13 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        if (testDisplay) {
+            window.screen = Qt.application.screens[testDisplayIndex]
+            window.width = Math.min(window.width, testDisplay.availableGeometry.width)
+            window.height = Math.min(window.height, testDisplay.availableGeometry.height)
+            window.x = testDisplay.availableGeometry.x + (testDisplay.availableGeometry.width - window.width) / 2
+            window.y = testDisplay.availableGeometry.y + (testDisplay.availableGeometry.height - window.height) / 2
+        }
         // Show the window according to the user's preferences
         if (SystemProperties.hasDesktopEnvironment) {
             if (StreamingPreferences.uiDisplayMode == StreamingPreferences.UI_MAXIMIZED) {

@@ -23,3 +23,13 @@ HEADERS += \
 win32:contains(QT_ARCH, x86_64) {
     INCLUDEPATH += $$PWD/../../libs/windows/include/x64
 }
+
+macx {
+    !disable-prebuilts {
+        INCLUDEPATH += $$PWD/../../libs/mac/include
+        LIBS += -L$$PWD/../../libs/mac/lib -lavutil.60
+    } else {
+        CONFIG += link_pkgconfig
+        PKGCONFIG += libavutil
+    }
+}
