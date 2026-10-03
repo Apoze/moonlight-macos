@@ -8,6 +8,13 @@ completion, and native presentation callbacks. The shared timing policy is
 unchanged. ProMotion uses a maximum-rate CADisplayLink request independent of drawable
 ownership and nextDrawable acquisition. All adaptive submissions use synchronized
 present after the shared worker target; the adaptive drawable pool is bounded to two.
+The opt-in three-drawable diagnostic is not the production default. CADisplayLink
+observations record the latest native tick without changing the shared policy.
+Metal completion feedback retains its command-buffer identity, wait outcome and
+conservative commit-to-observation bracket across presentation or cancellation;
+replay validates these without interpreting them as DXGI fences or Vulkan polls.
+The guard creates the video window hidden and verifies the complete native video
+area before showing it, then rechecks during streaming.
 Only the internal ProMotion panel is currently under test; OS timestamps do not
 prove physical VRR. See [Metal design](docs/macos-metal-presentation.md) and
 [README.macos.md](README.macos.md) for the implementation and validation scope.

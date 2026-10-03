@@ -2083,6 +2083,12 @@ void Session::exec()
 
     // We always want a resizable window with High DPI enabled
     Uint32 defaultWindowFlags = SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE;
+#ifdef Q_OS_MACOS
+    // Validate the native video window before it can appear on another screen.
+    if (BuiltinDisplayGuard::enabled()) {
+        defaultWindowFlags |= SDL_WINDOW_HIDDEN;
+    }
+#endif
 
     // If we're starting in windowed mode and the Moonlight GUI is maximized or
     // minimized, match that with the streaming window.
@@ -2175,6 +2181,26 @@ void Session::exec()
     if (m_IsFullScreen) {
         SDL_SetWindowFullscreen(m_Window, m_FullScreenFlag);
     }
+
+#ifdef Q_OS_MACOS
+    if (BuiltinDisplayGuard::enabled()) {
+        if (!BuiltinDisplayGuard::allows(m_Window)) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "Built-in display guard: refusing native video window outside internal display");
+            delete m_InputHandler;
+            m_InputHandler = nullptr;
+            SDL_DestroyWindow(m_Window);
+            m_Window = nullptr;
+            SDL_QuitSubSystem(SDL_INIT_VIDEO);
+            QThreadPool::globalInstance()->start(new DeferredSessionCleanupTask(this));
+            return;
+        }
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Built-in display guard: native video area entirely on internal display (SDL index %d)",
+                    SDL_GetWindowDisplayIndex(m_Window));
+        SDL_ShowWindow(m_Window);
+    }
+#endif
 
     bool needsFirstEnterCapture = false;
     bool needsPostDecoderCreationCapture = false;

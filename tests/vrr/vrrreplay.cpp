@@ -9069,6 +9069,9 @@ int main(int argc, char* argv[])
         // each Vulkan submission, including neutral cancellation submits.
         const bool gpuReadyVulkanPoll =
             nativeBackendDeclared && nativeBackend == kNativeBackendVulkan;
+        const auto gpuCompletionKind = optionalUnsignedField(fields, traceHeader.indexOf("gpu_completion_kind"));
+        const bool gpuReadyCommandBuffer = gpuCompletionKind == 1;
+        metrics.validityPayloadMismatches += gpuCompletionKind > 1 ? 1 : 0;
         const bool nativePresentResultDeclared =
             optionalUnsignedField(
                 fields, columns.nativePresentResultValid) != 0;
@@ -9529,7 +9532,26 @@ int main(int argc, char* argv[])
             metrics.gpuReadyAttemptedRows +=
                 gpuReadyAttempted ? 1 : 0;
             bool gpuReadyNativeSuccess = false;
-            if (gpuReadyVulkanPoll) {
+            if (gpuReadyCommandBuffer) {
+                // Command-buffer completion is independent of whether the
+                // prepared image was ultimately presented or cancelled.
+                // No DXGI event/fence or Vulkan texture poll is fabricated.
+                const bool noForeignStages = !gpuReadySignalResultDeclared &&
+                    !gpuReadySetEventResultDeclared && gpuReadySignalStartUs == 0 &&
+                    gpuReadySignalEndUs == 0 && gpuReadyFlushStartUs == 0 &&
+                    gpuReadyFlushEndUs == 0 && gpuReadySetEventStartUs == 0 &&
+                    gpuReadySetEventEndUs == 0 && gpuReadyPollStartUs == 0 &&
+                    gpuReadyPollEndUs == 0 && gpuReadyFenceValue == 0 &&
+                    gpuReadyPollCompletedValue == 0 && !gpuReadyCompletedBeforeWait;
+                const bool waitValid = gpuReadyAttempted && gpuReadyWaitResultDeclared &&
+                    gpuReadyWaitResult <= 2 && gpuReadyWaitStartUs != 0 &&
+                    gpuReadyTimeUs >= gpuReadyWaitStartUs &&
+                    (gpuReadyTimingDeclared == (gpuReadyWaitResult == 0));
+                gpuReadyNativeSuccess = noForeignStages && waitValid && gpuReadyTimingDeclared;
+                metrics.gpuReadyNativeResultRelationshipMismatchRows +=
+                    (noForeignStages && waitValid) ? 0 : 1;
+            }
+            else if (gpuReadyVulkanPoll) {
                 // libplacebo texture polling has no D3D11 HRESULT/event/fence
                 // stages. Its result is the shared wait result (0 means the
                 // output texture became idle; nonzero means cancellation,
@@ -13772,7 +13794,7 @@ int main(int argc, char* argv[])
         timelineDetails.recordedGpuReadyTimingValid =
             gpuReadyTimingValid;
         if (metrics.gpuReadyStageTimingTelemetryAvailable &&
-                !gpuReadyVulkanPoll) {
+                !gpuReadyVulkanPoll && !gpuReadyCommandBuffer) {
             const VrrGpuReadyStageTimingAudit stageTimingAudit =
                 evaluateVrrGpuReadyStageTiming(
                     recordedPreparationStartUs,
@@ -13819,7 +13841,7 @@ int main(int argc, char* argv[])
             metrics.gpuReadyNativeResultTelemetryAvailable ?
                 gpuReadyWaitResultDeclared : gpuReadyTimingValid;
         if (metrics.gpuReadyBoundsTelemetryAvailable &&
-                !gpuReadyVulkanPoll && gpuReadySetEventSucceeded) {
+                !gpuReadyVulkanPoll && !gpuReadyCommandBuffer && gpuReadySetEventSucceeded) {
             // A final check replaces the preparation poll in current D3D11
             // traces. Audit either observation independently of a successful
             // completion, including a failed final poll on device removal.
@@ -13868,7 +13890,7 @@ int main(int argc, char* argv[])
                          nativePresentStartUs) :
                      gpuReadyTimeUs <= recordedPreparationEndUs);
             if (metrics.gpuReadyBoundsTelemetryAvailable &&
-                    !gpuReadyVulkanPoll) {
+                    !gpuReadyVulkanPoll && !gpuReadyCommandBuffer) {
                 gpuReadyOrderValid =
                     gpuReadyOrderValid &&
                     gpuReadySignalStartUs != 0 &&
@@ -13895,7 +13917,7 @@ int main(int argc, char* argv[])
                 ++metrics.gpuReadyDurationMismatchRows;
             }
             if (metrics.gpuReadyBoundsTelemetryAvailable &&
-                    !gpuReadyVulkanPoll) {
+                    !gpuReadyVulkanPoll && !gpuReadyCommandBuffer) {
                 const VrrGpuCompletionBounds expectedBounds =
                     evaluateVrrGpuCompletionBounds(
                         recordedPreparationStartUs,
@@ -13930,6 +13952,15 @@ int main(int argc, char* argv[])
                             gpuReadyCompletionUpperBoundUs -
                                 gpuReadySignalStartUs);
                 }
+            }
+            else if (gpuReadyCommandBuffer) {
+                const bool boundsValid = gpuReadyCompletionLowerBoundUs >= recordedPreparationStartUs &&
+                    gpuReadyCompletionLowerBoundUs <= gpuReadyWaitStartUs &&
+                    gpuReadyCompletionUpperBoundUs == gpuReadyTimeUs &&
+                    gpuReadyCompletionUpperBoundUs >= gpuReadyCompletionLowerBoundUs &&
+                    gpuReadyCompletionUncertaintyUs ==
+                        gpuReadyCompletionUpperBoundUs - gpuReadyCompletionLowerBoundUs;
+                metrics.gpuReadyBoundsDerivationMismatchRows += boundsValid ? 0 : 1;
             }
             else if (gpuReadyVulkanPoll) {
                 // The writer derives the shared completion bracket directly

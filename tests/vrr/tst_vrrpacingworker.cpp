@@ -1356,6 +1356,101 @@ void testCancelledPreparedFenceTrace()
     qputenv("MOONLIGHT_VRR_TRACE", "");
 }
 
+// A command buffer may finish successfully even when its image is cancelled.
+// Verify that the writer keeps that independent completion identity and bracket.
+void testCommandBufferCompletionTrace()
+{
+    class Presenter : public FakeVrrFramePresenter {
+    public:
+        VrrPrepareResult prepareFrame(AVFrame* frame, uint64_t boundary) override
+        {
+            auto result = FakeVrrFramePresenter::prepareFrame(frame, boundary);
+            completion = {};
+            completion.gpuCompletionKind = VrrGpuCompletionKind::CommandBuffer;
+            completion.gpuReadyAttempted = true;
+            completion.gpuReadyCommandSubmittedUs = LiGetMicroseconds();
+            completion.gpuReadyWaitStartUs = LiGetMicroseconds();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            completion.gpuReadyTimeUs = LiGetMicroseconds();
+            completion.gpuReadyWaitResultValid = completion.gpuReadyTimingValid = true;
+            result.feedback = completion;
+            return result;
+        }
+        VrrPresentFeedback presentAdaptive(const VrrPresentRequest& request) override
+        {
+            auto native = FakeVrrFramePresenter::presentAdaptive(request);
+            auto result = completion;
+            result.presented = native.presented;
+            result.submissionTimeValid = native.submissionTimeValid;
+            result.submissionTimeUs = native.submissionTimeUs;
+            result.nativeBackendValid = true;
+            result.nativeBackend = VrrNativePresentationBackend::Metal;
+            result.submissionIdValid = true;
+            result.submissionId = ++submissionId;
+            return result;
+        }
+        VrrPresentFeedback cancelFrame() override
+        {
+            FakeVrrFramePresenter::cancelFrame();
+            auto result = completion;
+            result.cancelled = true;
+            return result;
+        }
+    private:
+        VrrPresentFeedback completion;
+        uint64_t submissionId = 0;
+    } backend;
+    resetFakeClock();
+    QTemporaryDir directory;
+    const QString path = directory.filePath("command-buffer.vrrtrace");
+    qputenv("MOONLIGHT_VRR_TRACE", QFile::encodeName(path));
+    PacerTelemetry telemetry;
+    TrackedFrameLifetime shown, cancelled;
+    {
+        VrrPacingWorker worker(&backend, enabledConfig(), &telemetry);
+        expect(worker.start(), "command-buffer worker must start");
+        worker.submit(frame(1, shown));
+        expect(backend.waitForPresentCount(1), "completed command buffer must present");
+        backend.blockPreparation();
+        worker.submit(frame(2, cancelled));
+        expect(backend.waitForPrepareCount(2), "second command buffer must prepare");
+        WINDOW_STATE_CHANGE_INFO minimized {};
+        minimized.stateChangeFlags = WINDOW_STATE_CHANGE_MINIMIZED;
+        worker.notifyWindowChanged(&minimized);
+        backend.releasePreparation();
+        expect(backend.waitForCancelCount(1), "completed command buffer must cancel on minimize");
+        expect(waitFor([&] { return backend.suspendedCount() == 1; }), "cancellation must finish");
+    }
+    const auto lines = readExpandedTrace(path).split('\n');
+    const auto columns = lines.value(0).split(',');
+    int completed = 0;
+    bool sawPresented = false, sawInterrupted = false;
+    for (const auto& line : lines) {
+        const auto fields = line.split(',');
+        if (fields.size() != columns.size()) continue;
+        auto value = [&](const char* name) { return fields.value(columns.indexOf(name)); };
+        if (value("gpu_completion_kind") != "1") continue;
+        ++completed;
+        const auto lower = value("gpu_ready_completion_lower_bound_us").toULongLong();
+        const auto upper = value("gpu_ready_completion_upper_bound_us").toULongLong();
+        expect(lower > 0 && lower <= value("gpu_ready_wait_start_us").toULongLong() &&
+               upper == value("gpu_ready_time_us").toULongLong() && upper >= lower &&
+               value("gpu_ready_completion_uncertainty_us").toULongLong() == upper - lower,
+               "command-buffer completion must preserve its bracket");
+        expect(value("gpu_ready_timing_valid") == "1", "completed buffer must be valid even if cancelled");
+        sawPresented |= value("disposition") == "presented";
+        sawInterrupted |= value("disposition") == "interrupted";
+    }
+    expect(completed == 2 && sawPresented && sawInterrupted,
+           "trace must preserve presented and cancelled command-buffer completions");
+    const char* exportPath = SDL_getenv("MOONLIGHT_VRR_TEST_EXPORT_COMMAND_BUFFER_TRACE");
+    if (exportPath && exportPath[0]) {
+        QFile::remove(QString::fromLocal8Bit(exportPath));
+        expect(QFile::copy(path, QString::fromLocal8Bit(exportPath)), "export command-buffer replay fixture");
+    }
+    qputenv("MOONLIGHT_VRR_TRACE", "");
+}
+
 void testDeferredSurfaceLifetime()
 {
     resetFakeClock();
@@ -2763,6 +2858,7 @@ int main()
     testTelemetrySnapshotsRemainCumulative();
     testSuspendDiscardAndFreshFrame();
     testCancelledPreparedFenceTrace();
+    testCommandBufferCompletionTrace();
     testDeferredSurfaceLifetime();
     testReusableSurfaceReleasedWithoutSuccessor();
     testDecodeBoundaryCapturedBeforeQueueAndPreparedExactly();

@@ -30,6 +30,8 @@ struct Record {
     uint64_t submitUs = 0, presentedUs = 0, observedUs = 0, uncertaintyUs = 0;
     int64_t rtp = 0;
     double submitMedia = 0, presentedMedia = 0;
+    uint64_t displaySequence = 0;
+    double displayTimestamp = 0, displayTarget = 0, displayObserved = 0;
     bool callback = false;
 };
 

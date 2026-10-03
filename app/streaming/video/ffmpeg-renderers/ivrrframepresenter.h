@@ -30,6 +30,11 @@ enum class VrrNativePresentationBackend : uint8_t {
     Metal,
 };
 
+// Independent of presentation: a rendered image can complete and be cancelled
+// without ever calling the native presentation API. Legacy traces infer the
+// existing DXGI/Vulkan mechanism; new command-buffer backends identify it here.
+enum class VrrGpuCompletionKind : uint8_t { Legacy, CommandBuffer };
+
 // Observation-only D3DKMT raster sample bracketed on the Moonlight clock.
 // queryResult is the exact signed NTSTATUS. A zero result makes the blanking
 // and scan-line payload valid; no field implies that a Present took effect at
@@ -73,6 +78,8 @@ inline const char* vrrFallbackReasonName(VrrFallbackReason reason)
 // describes why the operation ended, not whether the platform submitted: some
 // APIs must submit an acquired image even while abandoning it.
 struct VrrPresentFeedback {
+    VrrGpuCompletionKind gpuCompletionKind = VrrGpuCompletionKind::Legacy;
+    uint64_t gpuReadyCommandSubmittedUs = 0;
     bool presented = false;
     bool cancelled = false;
     bool submissionTimeValid = false;

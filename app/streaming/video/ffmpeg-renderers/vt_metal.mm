@@ -787,7 +787,12 @@ public:
 
             // Allow tearing if V-Sync is off (also requires direct display path)
             m_MetalLayer.displaySyncEnabled = params->enableVsync;
-            m_MetalLayer.maximumDrawableCount = m_VrrRequested ? 2 : 3;
+            // Diagnostic A/B: change only drawable availability, preserving
+            // the source scheduler, server negotiation and presentation API.
+            m_MetalLayer.maximumDrawableCount = m_VrrRequested &&
+                qgetenv("MOONLIGHT_METAL_DRAWABLES") != "3" ? 2 : 3;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Metal drawable pool: %lu",
+                        (unsigned long)m_MetalLayer.maximumDrawableCount);
             m_MetalLayer.allowsNextDrawableTimeout = YES;
             SDL_SysWMinfo info;
             SDL_VERSION(&info.version);
@@ -865,10 +870,25 @@ public:
         // timeout. No callback refers to this renderer or its SDL primitives.
         auto completion = std::make_shared<MetalCompletion>();
         [buffer addCompletedHandler:^(id<MTLCommandBuffer>) { dispatch_semaphore_signal(completion->semaphore); }];
+        const auto committed = LiGetMicroseconds();
         [buffer commit];
         const auto waitStart = LiGetMicroseconds();
         const auto status = dispatch_semaphore_wait(completion->semaphore, dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC));
         const auto ready = LiGetMicroseconds();
+        result.feedback.gpuReadyAttempted = true;
+        result.feedback.gpuCompletionKind = VrrGpuCompletionKind::CommandBuffer;
+        result.feedback.gpuReadyTimingValid = status == 0 && buffer.status == MTLCommandBufferStatusCompleted;
+        result.feedback.gpuReadyWaitResultValid = true;
+        // dispatch_semaphore_wait specifies zero on success, nonzero on
+        // timeout. Preserve that meaning in the portable completion contract.
+        result.feedback.gpuReadyWaitResult = status != 0 ? 1 :
+            (buffer.status == MTLCommandBufferStatusCompleted ? 0 : 2);
+        result.feedback.gpuReadyWaitStartUs = waitStart;
+        result.feedback.gpuReadyTimeUs = ready;
+        if (result.feedback.gpuReadyTimingValid) {
+            result.feedback.gpuReadyCommandSubmittedUs = committed;
+        }
+        m_PreparedFeedback = result.feedback;
         if (status != 0 || buffer.status != MTLCommandBufferStatusCompleted) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Metal preparation failed or exceeded 50 ms");
             requestRecovery();
@@ -882,17 +902,13 @@ public:
         result.timingValid = true;
         result.acquireUs = acquired - acquire;
         result.renderUs = waitStart - acquired + acquire - start;
-        result.feedback.gpuReadyAttempted = true;
-        result.feedback.gpuReadyTimingValid = true;
-        result.feedback.gpuReadyWaitStartUs = waitStart;
-        result.feedback.gpuReadyTimeUs = ready;
         return result;
     }}
 
     VrrPresentFeedback presentAdaptive(const VrrPresentRequest&) override
     { @autoreleasepool {
         if (!m_PreparedDrawable || m_VrrSuspended) return cancelFrame();
-        VrrPresentFeedback feedback;
+        VrrPresentFeedback feedback = m_PreparedFeedback;
         feedback.nativeBackendValid = true;
         feedback.nativeBackend = VrrNativePresentationBackend::Metal;
         feedback.submissionId = observePresentation(nullptr, m_PreparedDrawable, m_PreparedAtUs);
@@ -921,7 +937,8 @@ public:
     {
         [m_PreparedDrawable release];
         m_PreparedDrawable = nil;
-        VrrPresentFeedback feedback;
+        VrrPresentFeedback feedback = m_PreparedFeedback;
+        m_PreparedFeedback = {};
         feedback.cancelled = true;
         return feedback;
     }
@@ -962,6 +979,11 @@ public:
         record.prepareUs = prepared;
         record.submitUs = clock.beforeUs;
         record.submitMedia = clock.mediaSeconds;
+        const auto tick = m_DisplayRefreshRequest.latest();
+        record.displaySequence = tick.sequence;
+        record.displayTimestamp = tick.timestamp;
+        record.displayTarget = tick.target;
+        record.displayObserved = tick.observed;
         const auto serial = state->submit(record);
         [drawable addPresentedHandler:^(id<MTLDrawable> shown) {
             state->presented(serial, shown.presentedTime, LiGetMicroseconds(), clock);
@@ -983,12 +1005,13 @@ public:
         }
         QTextStream out(&file);
         out.setRealNumberPrecision(16);
-        out << "serial,drawable,rtp,decoder_us,prepare_us,submit_us,presented_us,observed_us,uncertainty_us,submit_media_s,presented_media_s,callback,adaptive,promotion\n";
+        out << "serial,drawable,rtp,decoder_us,prepare_us,submit_us,presented_us,observed_us,uncertainty_us,submit_media_s,presented_media_s,callback,adaptive,promotion,display_sequence,display_timestamp_s,display_target_s,display_observed_s\n";
         for (const auto& r : records) {
             out << r.serial << ',' << r.drawable << ',' << r.rtp << ',' << r.decoderUs << ','
                 << r.prepareUs << ',' << r.submitUs << ',' << r.presentedUs << ',' << r.observedUs << ','
                 << r.uncertaintyUs << ',' << r.submitMedia << ',' << r.presentedMedia << ',' << r.callback
-                << ',' << m_VrrRequested << ',' << m_ProMotion << '\n';
+                << ',' << m_VrrRequested << ',' << m_ProMotion << ',' << r.displaySequence << ','
+                << r.displayTimestamp << ',' << r.displayTarget << ',' << r.displayObserved << '\n';
         }
         out.flush();
         if (file.commit()) SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Metal presentation trace: %s", qPrintable(path));
@@ -1205,6 +1228,7 @@ private:
     bool m_VrrRequested = false, m_VrrSuspended = false;
     bool m_AdaptiveDisplay = false, m_ProMotion = false;
     id<CAMetalDrawable> m_PreparedDrawable = nil;
+    VrrPresentFeedback m_PreparedFeedback;
     DisplayLinkDelegate* m_DisplayLinkDelegate = nil;
     uint64_t m_PreparedDecoderUs = 0, m_PreparedAtUs = 0, m_LastObservedSerial = 0;
     int64_t m_PreparedRtp = 0;

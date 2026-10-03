@@ -41,7 +41,9 @@ bool BuiltinDisplayGuard::allows(SDL_Window* window)
     SDL_SysWMinfo info{};
     SDL_VERSION(&info.version);
     return window && SDL_GetWindowWMInfo(window, &info) &&
-           info.subsystem == SDL_SYSWM_COCOA && allowed(info.info.cocoa.window.screen);
+           info.subsystem == SDL_SYSWM_COCOA && allowed(info.info.cocoa.window.screen) &&
+           NSContainsRect(info.info.cocoa.window.screen.frame,
+                          [info.info.cocoa.window convertRectToScreen:info.info.cocoa.window.contentView.frame]);
 }
 
 void BuiltinDisplayGuard::watch(QWindow* window)
@@ -49,7 +51,8 @@ void BuiltinDisplayGuard::watch(QWindow* window)
     if (!enabled()) return;
     auto check = [window] {
         QScreen* builtin = screen();
-        if (!builtin || window->screen() != builtin) {
+        if (!builtin || window->screen() != builtin ||
+                !builtin->geometry().contains(window->geometry())) {
             window->hide();
             qCritical() << "Built-in display guard: display unavailable, mirrored, or window moved to external display. Closing client.";
             QCoreApplication::exit(2);

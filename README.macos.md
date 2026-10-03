@@ -60,7 +60,9 @@ de l'organisation. Le dossier portant son nom complet n'est pas utilisé.
 Le garde-fou identifie la dalle intégrée via CoreGraphics et l'identité native
 de QScreen, sans dépendre de son nom ou d'un numéro d'écran fixe. Il positionne
 l'interface sur cette dalle et refuse un écran intégré absent ou en miroir.
-Un déplacement de l'interface sur l'écran externe ferme le client ; un
+La fenêtre vidéo est créée cachée puis vérifiée nativement avant affichage ;
+sa zone vidéo entière doit tenir sur la dalle intégrée. Un déplacement de
+l'interface sur l'écran externe ferme le client ; un
 changement d'écran pendant le flux interrompt la session. La surveillance
 s'effectue dans la boucle d'événements ; elle ne verrouille pas les commandes
 de fenêtres de macOS. Ne pas déplacer la fenêtre pendant une mesure.
@@ -77,7 +79,10 @@ Les CSV bruts et associations restent dans `.runtime`, jamais dans Git.
 
 Les sept suites déterministes couvrent le contrôleur partagé, ses politiques,
 le worker, les configurations de replay, les observations Metal et leurs conversions
-d’horloge. Les traces réelles passent aussi le replay exact.
+d’horloge. Les traces réelles passent aussi le replay exact. Le test de complétion GPU
+couvre présentation et annulation, avec un replay exact automatisé ; les
+quatre tests Python vérifient la corrélation des étapes du pipeline.
+Voir [la roadmap et les résultats récents](docs/macos-vrr-roadmap.md).
 Cela ne valide pas à lui seul le scanout physique ou la latence clic-à-photon.
 
 Le prochain périmètre, après la validation de la dalle intégrée, reste l’écran

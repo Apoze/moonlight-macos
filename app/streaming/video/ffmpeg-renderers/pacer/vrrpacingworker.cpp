@@ -90,7 +90,7 @@ constexpr char kTraceHeader[] =
     ",prepared_ahead,stage_start_us,stage_decode_ready_us,stage_decode_wait_us,stage_render_start_us,stage_render_end_us,stage_ready_us"
     ",flip_protection_checked,flip_protection_query_result,flip_protection_query_start_us,flip_protection_query_end_us"
     ",flip_protection_pending,flip_protection_reference_us,flip_protection_latched"
-    ",decode_hold_us"
+    ",decode_hold_us,gpu_completion_kind"
     "\n";
 #undef VRR_TRACE_PARAMETER_HEADER
 constexpr uint32_t kVrrWindowStateMask =
@@ -1453,7 +1453,9 @@ void VrrPacingWorker::writeTraceRow(const TraceRow& row)
             feedback.gpuReadyTimeUs - feedback.gpuReadyWaitStartUs : 0;
     const uint64_t gpuReadyCompletionLowerBoundUs =
         feedback.gpuReadyTimingValid ?
-            (feedback.gpuReadyCompletedBeforeWait ?
+            (feedback.gpuCompletionKind == VrrGpuCompletionKind::CommandBuffer ?
+                 feedback.gpuReadyCommandSubmittedUs :
+             feedback.gpuReadyCompletedBeforeWait ?
                  feedback.gpuReadySignalStartUs :
                  feedback.gpuReadyPollStartUs) :
             0;
@@ -1863,6 +1865,7 @@ void VrrPacingWorker::writeTraceRow(const TraceRow& row)
     addUnsigned(feedback.flipProtectionReferenceUs);
     addBool(feedback.flipProtectionLatched);
     addUnsigned(row.decodeHoldUs);
+    addUnsigned(static_cast<uint64_t>(feedback.gpuCompletionKind));
     line.append('\n');
 
     if (m_TraceFormat == TraceFormat::ChunkedCompressed) {

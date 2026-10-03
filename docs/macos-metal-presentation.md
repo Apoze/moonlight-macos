@@ -182,3 +182,23 @@ Optical latency requires an external camera/sensor protocol and remains open.
 - [Andy Grundman's Metal branch](https://github.com/andygrundman/moonlight-qt/tree/andyg.macos-metal-frame-pacing),
   reviewed at `57088f1a`: useful native telemetry and ProMotion distinction;
   its separate scheduler/UI architecture is not imported.
+
+## Diagnostic de complétion et de réception (3 octobre 2026)
+
+La complétion Metal est identifiée indépendamment de la présentation par
+`gpu_completion_kind=1` (commande GPU). L'attente indique explicitement succès,
+expiration ou erreur ; ses observations sont conservées si l'image est annulée.
+Le bracket de complétion va de l'instant avant commit à l'observation CPU de fin,
+pas à une date GPU inventée. Le replay vérifie ce contrat sans appliquer les
+stages DXGI/Vulkan. Les traces sans cette colonne conservent leur interprétation.
+
+Le CSV Metal ajoute la dernière séquence CADisplayLink et ses dates natives ;
+ces observations ne pilotent pas le rendu. `MOONLIGHT_METAL_DRAWABLES=3` est une
+option de diagnostic uniquement : elle réduit l'attente d'acquisition mais ne
+valide ni la cadence ni l'absence de présentations sautées. Le défaut reste deux
+surfaces en adaptatif et trois en fixe.
+
+La corrélation des cohortes et les résultats réseau indépendants de Moonlight
+sont détaillés dans [la roadmap](macos-vrr-roadmap.md). Les variantes de
+projection `presentAtTime` et de durée minimale n'ont pas passé les objectifs ;
+elles ne sont pas intégrées à la politique de production.
